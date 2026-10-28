@@ -1,0 +1,50 @@
+{
+  "schema": "archify-workflow-v3",
+  "name": "esp32s3-inmp441-firmware",
+  "title": "ESP32-S3 INMP441 Wi-Fi UDP 发射端固件",
+  "status": "build_verified_hardware_acceptance_pending_2026-10-26",
+  "source": "rust-esp32-main-inspection-2026-10-26; firmware-brief-draft-2026-10-26; user-confirmed-workflow-2026-10-26; implementation-static-check-2026-10-26; esp32s3-build-verified-2026-10-26; udp-receiver-tool-selftest-2026-10-27",
+  "nodes": [
+    {"id": "boot", "type": "system", "label": "启动配置与 NVS 初始化"},
+    {"id": "wifi", "type": "process", "label": "Wi-Fi STA 连接并取得 IP"},
+    {"id": "i2s", "type": "process", "label": "初始化 INMP441 I2S RX"},
+    {"id": "capture", "type": "process", "label": "采集 PCM 帧并进入有界队列"},
+    {"id": "udp", "type": "process", "label": "封装音频帧并 UDP 发送"},
+    {"id": "control", "type": "manual", "label": "处理按键、UART 恢复与调试事件"},
+    {"id": "ota", "type": "process", "label": "OTA 校验、回滚与恢复边界"},
+    {"id": "verify", "type": "system", "label": "构建、协议测试与实机验收"}
+  ],
+  "edges": [
+    {"from": "boot", "to": "wifi", "label": "配置加载完成"},
+    {"from": "wifi", "to": "i2s", "label": "网络初始化并取得连接状态"},
+    {"from": "i2s", "to": "capture", "label": "RX 通道就绪"},
+    {"from": "capture", "to": "udp", "label": "PCM 帧与队列统计"},
+    {"from": "control", "to": "udp", "label": "按键/调试控制发送状态"},
+    {"from": "control", "to": "ota", "label": "恢复或升级请求"},
+    {"from": "udp", "to": "verify", "label": "发送统计与协议结果"},
+    {"from": "ota", "to": "verify", "label": "升级/回滚验证"}
+  ],
+  "failure_exits": [
+    {"from": "wifi", "condition": "STA 连接失败或接收端不可达", "to": "限流重连；UDP 丢帧并记录统计，不阻塞采集任务"},
+    {"from": "i2s", "condition": "I2S 初始化或音频格式失败", "to": "停止发送，输出诊断日志并保留 UART 恢复"},
+    {"from": "capture", "condition": "队列满或采集异常", "to": "丢弃受控帧并计数，避免阻塞系统"},
+    {"from": "ota", "condition": "校验失败或更新后无法启动", "to": "回滚上一固件，必要时有线恢复"},
+    {"from": "verify", "condition": "S3 构建、协议测试或实机验收失败", "to": "不发布固件，返回对应节点修复"}
+  ],
+  "constraints": {
+    "repository": "https://github.com/XinwangTao/rust-esp32.git",
+    "working_project": "tarot-esp32",
+    "baseline": "ESP32-C3 + ESP-IDF 5.3.1 + Rust/C++ hybrid + I2S TX + Wi-Fi AP/HTTP",
+    "target": "ESP32-S3-DevKitM-1 + INMP441 + I2S RX + Wi-Fi STA/UDP",
+    "candidate_pins": "I2S GPIO4/5/6; keys GPIO7/8/9; UART0 GPIO43/44",
+    "in_scope": "S3 target migration, audio RX, UDP transmitter, key abstraction, UART recovery boundary, OTA/debug skeleton",
+    "out_of_scope": "EDA/PCB, receiver firmware/audio output, bare-chip circuits, production credentials"
+  },
+  "references": [
+    "https://github.com/XinwangTao/rust-esp32.git",
+    "https://dl.espressif.com/dl/schematics/SCH_ESP32-S3-DEVKITM-1_V1_20210310A.pdf",
+    "Sukecz/esp32-birdnet-mic",
+    "Inouye165/esp32s3-inmp441-project",
+    "Espressif ESP-IDF OTA example"
+  ]
+}

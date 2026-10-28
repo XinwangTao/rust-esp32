@@ -1,33 +1,28 @@
 [package]
 name = "tarot_core"
-version = "0.7.0"
+version = "0.8.0"
 authors = ["Admin"]
-description = "Tarot machine high-performance ritual engine component"
+description = "ESP32-S3 INMP441 UDP audio transmitter core"
 edition = "2021"
 
 [lib]
 name = "tarot_core"
-# Compile as a static library for C++ CMake linking
 crate-type = ["staticlib"]
 
 [dependencies]
-# ESP-IDF 系统服务 (WiFi, HTTP, Logging 等)
 esp-idf-svc = { version = "0.50", default-features = false, features = ["critical-section", "std", "alloc", "experimental"] }
 esp-idf-hal = { version = "0.45", default-features = false }
-embedded-svc = "0.28"
 anyhow = "1.0"
 log = "0.4"
-tjpgdec-rs = "0.4.0"
-# 显式声明 esp-idf-sys，并禁用所有默认特性（特别是 binstart），防止生成多余 of app_main
 esp-idf-sys = { version = "0.36", default-features = false, features = ["std", "native"] }
-serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+embedded-svc = "0.28"
 
 [package.metadata.esp-idf-sys]
 esp_idf_tools_install_dir = "from_env"
-esp_idf_sdkconfig_defaults = ["sdkconfig.defaults"]
+esp_idf_sdkconfig_defaults = ["sdkconfig.defaults", "sdkconfig.defaults.esp32s3"]
 
 [profile.dev]
-panic = "unwind" # std 下可以使用 unwind
+panic = "unwind"
 
 [profile.release]
 panic = "abort"

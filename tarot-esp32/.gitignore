@@ -23,3 +23,6 @@ spiffs_data/tarot_*.rgb565
 .factorypath
 .project
 .settings/
+
+# per-config ESP-IDF build dirs (e.g. build-audio-s3)
+build-*/
