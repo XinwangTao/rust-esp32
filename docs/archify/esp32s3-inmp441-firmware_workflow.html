@@ -6,14 +6,14 @@
 <title>ESP32-S3 INMP441 Wi-Fi UDP 发射端固件</title>
 <style>
 :root{color-scheme:light;--ink:#18212b;--muted:#607080;--line:#b8c5cf;--surface:#f5f7f8;--system:#d9ecf4;--process:#e4eee1;--manual:#f7e7c9;--fail:#f3d7d2}
-*{box-sizing:border-box}body{margin:0;background:#fff;color:var(--ink);font:15px/1.5 system-ui,"Microsoft YaHei",sans-serif}main{max-width:1240px;margin:0 auto;padding:28px 24px 44px}h1{font-size:28px;margin:0 0 6px}p{margin:4px 0;color:var(--muted)}.meta{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0 22px}.tag{border:1px solid var(--line);padding:4px 9px;border-radius:4px;background:var(--surface);font-size:13px}.legend{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0 18px;color:var(--muted);font-size:13px}.legend span:before{content:"";display:inline-block;width:12px;height:12px;margin-right:5px;vertical-align:-2px;border:1px solid var(--line)}.l-system:before{background:var(--system)}.l-process:before{background:var(--process)}.l-manual:before{background:var(--manual)}.l-fail:before{background:var(--fail)}.flow{border:1px solid var(--line);background:var(--surface);padding:22px;overflow:auto}.row{display:grid;grid-template-columns:repeat(8,minmax(145px,1fr));gap:26px;min-width:1300px;align-items:center}.node{min-height:88px;border:1px solid var(--line);border-radius:5px;padding:11px 10px;display:flex;align-items:center;justify-content:center;text-align:center;font-weight:650;position:relative}.system{background:var(--system)}.process{background:var(--process)}.manual{background:var(--manual)}.arrow{position:absolute;right:-27px;top:50%;width:26px;border-top:2px solid #71808c}.arrow:after{content:"";position:absolute;right:-1px;top:-5px;border-left:7px solid #71808c;border-top:5px solid transparent;border-bottom:5px solid transparent}.failures{margin-top:22px;display:grid;grid-template-columns:repeat(5,1fr);gap:14px}.failure{background:var(--fail);border:1px solid #c9958b;border-radius:5px;padding:12px}.failure strong{display:block;margin-bottom:4px}.section{margin-top:24px;border-top:1px solid var(--line);padding-top:16px}ul{margin:8px 0;padding-left:20px}code{background:#eef1f3;padding:1px 4px;border-radius:3px}@media(max-width:700px){main{padding:22px 14px}h1{font-size:23px}.failures{grid-template-columns:1fr}}
+*{box-sizing:border-box}body{margin:0;background:#fff;color:var(--ink);font:15px/1.5 system-ui,"Microsoft YaHei",sans-serif}main{max-width:1240px;margin:0 auto;padding:28px 24px 44px}h1{font-size:28px;margin:0 0 6px}p{margin:4px 0;color:var(--muted)}.meta{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0 22px}.tag{border:1px solid var(--line);padding:4px 9px;border-radius:4px;background:var(--surface);font-size:13px}.legend{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0 18px;color:var(--muted);font-size:13px}.legend span:before{content:"";display:inline-block;width:12px;height:12px;margin-right:5px;vertical-align:-2px;border:1px solid var(--line)}.l-system:before{background:var(--system)}.l-process:before{background:var(--process)}.l-manual:before{background:var(--manual)}.l-fail:before{background:var(--fail)}.flow{border:1px solid var(--line);background:var(--surface);padding:22px;overflow:auto}.row{display:grid;grid-template-columns:repeat(9,minmax(145px,1fr));gap:26px;min-width:1450px;align-items:center}.node{min-height:88px;border:1px solid var(--line);border-radius:5px;padding:11px 10px;display:flex;align-items:center;justify-content:center;text-align:center;font-weight:650;position:relative}.system{background:var(--system)}.process{background:var(--process)}.manual{background:var(--manual)}.arrow{position:absolute;right:-27px;top:50%;width:26px;border-top:2px solid #71808c}.arrow:after{content:"";position:absolute;right:-1px;top:-5px;border-left:7px solid #71808c;border-top:5px solid transparent;border-bottom:5px solid transparent}.failures{margin-top:22px;display:grid;grid-template-columns:repeat(6,1fr);gap:14px}.failure{background:var(--fail);border:1px solid #c9958b;border-radius:5px;padding:12px}.failure strong{display:block;margin-bottom:4px}.section{margin-top:24px;border-top:1px solid var(--line);padding-top:16px}ul{margin:8px 0;padding-left:20px}code{background:#eef1f3;padding:1px 4px;border-radius:3px}@media(max-width:700px){main{padding:22px 14px}h1{font-size:23px}.failures{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <main>
 <h1>ESP32-S3 INMP441 Wi-Fi UDP 发射端固件</h1>
-<p>Archify workflow · 当前状态：实机验收通过（2026-10-28：Wi-Fi 连接、UDP 50 包/秒零丢包、INMP441 真实音频采集）· 基于 rust-esp32 迁移，不修改 EDA</p>
-<div class="meta"><span class="tag">ESP32-S3</span><span class="tag">INMP441 I2S RX</span><span class="tag">Wi-Fi STA</span><span class="tag">UDP 音频</span><span class="tag">GPIO7/8/9 按键</span><span class="tag">UART/OTA</span></div>
+<p>Archify workflow · 当前状态：扬声器双向链路验证通过（2026-10-28：Wi-Fi 连接、UDP 50 包/秒零丢包、INMP441 真实音频采集、I2S TX 自检音与 UDP 下行播放经咪头回采确认）· 基于 rust-esp32 迁移，不修改 EDA</p>
+<div class="meta"><span class="tag">ESP32-S3</span><span class="tag">INMP441 I2S RX</span><span class="tag">扬声器 I2S TX</span><span class="tag">Wi-Fi STA</span><span class="tag">UDP 5000 上行 / 5001 下行</span><span class="tag">GPIO8/9 按键</span><span class="tag">UART/OTA</span></div>
 <div class="legend"><span class="l-system">系统/验收</span><span class="l-process">处理</span><span class="l-manual">人工/控制</span><span class="l-fail">失败/兜底出口</span></div>
 <section class="flow" aria-label="固件主流程图">
 <div class="row">
@@ -22,19 +22,21 @@
 <div class="node process">初始化<br>INMP441 I2S RX<span class="arrow"></span></div>
 <div class="node process">采集 PCM 帧<br>进入有界队列<span class="arrow"></span></div>
 <div class="node process">封装音频帧<br>UDP 发送<span class="arrow"></span></div>
+<div class="node process">扬声器 I2S TX<br>UDP 5001 下行播放<span class="arrow"></span></div>
 <div class="node manual">按键、UART 恢复<br>调试事件<span class="arrow"></span></div>
 <div class="node process">OTA 校验、<br>回滚与恢复<span class="arrow"></span></div>
 <div class="node system">构建、协议测试<br>实机验收</div>
 </div>
 <div class="failures">
 <div class="failure"><strong>Wi-Fi/接收端失败</strong>限流重连，UDP 丢帧并统计，不阻塞采集。</div>
-<div class="failure"><strong>I2S 初始化失败</strong>停止发送，输出诊断日志并保留 UART 恢复。</div>
+<div class="failure"><strong>I2S RX 初始化失败</strong>停止发送，输出诊断日志并保留 UART 恢复。</div>
+<div class="failure"><strong>扬声器不可用</strong>仅告警并禁用 TX，上行采集不受影响；可发 <code>PIN:b,w,d</code> 换引脚重试。</div>
 <div class="failure"><strong>采集队列溢出</strong>受控丢帧并计数，避免阻塞系统。</div>
 <div class="failure"><strong>OTA 失败</strong>回滚上一固件，必要时有线恢复。</div>
 <div class="failure"><strong>验证失败</strong>不发布固件，返回对应节点修复。</div>
 </div>
 </section>
-<section class="section"><strong>仓库基线与迁移边界</strong><ul><li>仓库：<code>rust-esp32</code>；主项目：<code>tarot-esp32</code>。</li><li>已验证基线：ESP32-C3、ESP-IDF 5.3.1、Rust/C++ 混合、I2S TX 播放、Wi-Fi AP/HTTP。</li><li>目标：ESP32-S3、INMP441 I2S RX、Wi-Fi STA/UDP；候选 I2S <code>GPIO4/5/6</code>、按键 <code>GPIO7/8/9</code>、UART0 <code>GPIO43/44</code>。</li><li>不做：EDA/PCB、接收端固件、音频输出、裸芯片电路、生产凭据。</li></ul></section>
+<section class="section"><strong>仓库基线与迁移边界</strong><ul><li>仓库：<code>rust-esp32</code>；主项目：<code>tarot-esp32</code>。</li><li>已验证基线：ESP32-C3、ESP-IDF 5.3.1、Rust/C++ 混合、I2S TX 播放、Wi-Fi AP/HTTP。</li><li>目标：ESP32-S3、INMP441 I2S RX、扬声器 I2S TX、Wi-Fi STA/UDP 双向音频；实测引脚 I2S RX <code>GPIO4/5/6</code>、扬声器 <code>GPIO15(BCLK)/16(LRCLK)/7(DIN)</code>、按键 <code>GPIO8/9</code>、UART0 <code>GPIO43/44</code>。</li><li>扬声器验证方式：开机自检音 + 下行 <code>TONE</code> 控制帧，用 INMP441 回采 880/1320Hz；下行音频走 UDP 5001 的 AUD0 帧。</li><li>不做：EDA/PCB、桌面接收端软件、裸芯片电路、生产凭据。</li></ul></section>
 <section class="section"><strong>参考方向</strong><p>Espressif DevKitM-1 官方资料；当前仓库的 ESP-IDF/Rust/C++ 构建骨架；<code>Sukecz/esp32-birdnet-mic</code> 的 Wi-Fi 音频/OTA 方向；<code>Inouye165/esp32s3-inmp441-project</code> 的 S3+INMP441 方向；Espressif ESP-IDF OTA 示例。</p></section>
 </main>
 </body>

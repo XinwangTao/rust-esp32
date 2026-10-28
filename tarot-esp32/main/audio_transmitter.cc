@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "audio_speaker.h"
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
 #include "esp_log.h"
@@ -20,7 +21,7 @@ constexpr char TAG[] = "audio_tx";
 constexpr gpio_num_t PIN_I2S_SCK = GPIO_NUM_4;
 constexpr gpio_num_t PIN_I2S_WS = GPIO_NUM_5;
 constexpr gpio_num_t PIN_I2S_SD = GPIO_NUM_6;
-constexpr gpio_num_t PIN_KEY_1 = GPIO_NUM_7;
+// GPIO7 已分配给扬声器 I2S BCLK，不再作为按键输入（避免上拉与 I2S 输出冲突）
 constexpr gpio_num_t PIN_KEY_2 = GPIO_NUM_8;
 constexpr gpio_num_t PIN_KEY_3 = GPIO_NUM_9;
 constexpr uint32_t SAMPLE_RATE = 16000;
@@ -75,7 +76,7 @@ void send_task(void *) {
 
 void configure_keys() {
     gpio_config_t config{};
-    config.pin_bit_mask = (1ULL << PIN_KEY_1) | (1ULL << PIN_KEY_2) | (1ULL << PIN_KEY_3);
+    config.pin_bit_mask = (1ULL << PIN_KEY_2) | (1ULL << PIN_KEY_3);
     config.mode = GPIO_MODE_INPUT;
     config.pull_up_en = GPIO_PULLUP_ENABLE;
     config.pull_down_en = GPIO_PULLDOWN_DISABLE;
@@ -126,5 +127,6 @@ extern "C" esp_err_t audio_transmitter_start(void) {
     ESP_LOGI(TAG, "INMP441 RX started: rate=%u pins=%d/%d/%d",
              static_cast<unsigned>(SAMPLE_RATE), static_cast<int>(PIN_I2S_SCK),
              static_cast<int>(PIN_I2S_WS), static_cast<int>(PIN_I2S_SD));
+    speaker_start();  // 失败仅告警，不影响上行
     return ESP_OK;
 }

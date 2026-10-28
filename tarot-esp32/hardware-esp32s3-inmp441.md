@@ -11,12 +11,16 @@
 | I2S data in | GPIO6 | J1-8 | `SD` |
 | microphone power | 3V3 | J3-2 | `VDD` |
 | common ground | GND | J1-1/J1-22/J3-1 | `GND` |
-| key 1 | GPIO7 | J1-9 | active-low input |
+| 扬声器 I2S BCLK | GPIO15 | — | 功放 `BCLK` |
+| 扬声器 I2S LRCLK | GPIO16 | — | 功放 `LRCLK/WS` |
+| 扬声器 I2S DIN | GPIO7 | — | 功放 `DIN` |
 | key 2 | GPIO8 | J1-10 | active-low input |
 | key 3 | GPIO9 | J1-11 | active-low input |
 | UART0 RX | GPIO44 / U0RXD | J3-5 | recovery/debug |
 | UART0 TX | GPIO43 / U0TXD | J3-6 | recovery/debug |
 | BOOT | GPIO0 | J1-2 | controlled download entry |
+
+扬声器三根信号线的顺序不是按排针顺序排列的：GPIO7 是**数据**（DIN），15/16 才是时钟。这是 2026-10-28 在实机上用「发 PIN 控制帧逐个排列试 + 咪头回采」定出来的结论，`main/CMakeLists.txt` 的默认值即由此固定。原先把 GPIO7 当按键输入，已让位给扬声器。
 
 ## Audio format
 
@@ -47,10 +51,26 @@ python tools/udp_audio_receiver.py --port 5000 --seconds 60 --dump dump.pcm
 
 注意：Wi-Fi 与 UDP 目标为编译期注入（`option_env!`），设置 `AUDIO_WIFI_SSID`/`AUDIO_WIFI_PASSWORD`/`AUDIO_UDP_TARGET` 后必须重新 `idf.py build` 再 flash，凭据不要提交进仓库。
 
+## 扬声器（I2S TX）验收
+
+I2S1 做主控发送，16 kHz / 16-bit / mono，默认引脚 `GPIO15(BCLK)/16(LRCLK)/7(DIN)`，无独立功放使能脚（`SPEAKER_EN=-1`）。
+
+- **开机自检音**：初始化成功后播 880 Hz 180 ms + 1320 Hz 140 ms。
+- **`TONE` 控制帧**：向 `板子IP:5001` 发 4 字节 `TONE`，重播自检音（无需重启）。
+- **`PIN:b,w,d` 控制帧**：运行时改 I2S TX 引脚并立即重播自检音，用于接线排查（已用它确定 DIN 在 GPIO7）。
+- **下行音频**：向 `板子IP:5001` 发与上行同格式的 `AUD0` 帧，payload 为 s16le mono，板子直接写 I2S 播放。
+
+已验证（2026-10-28，咪头回采）：自检音两段频率在 880/1320 Hz 各命中 8/7 帧；PC 推 2 s 1 kHz 正弦，回采命中 95 帧（能量 >3000）。扬声器初始化失败只告警，不影响上行采集。
+
+```bash
+# 触发自检音（Linux/macOS）
+printf 'TONE' | nc -u -w1 <board-ip> 5001
+```
+
 ## Constraints
 
 - Do not drive GPIO0 low during ordinary startup.
 - Keep GPIO43/44 available for UART0 recovery.
 - Do not use GPIO45/46, GPIO19/20, or GPIO48 for this slice.
 - Do not connect an unregulated Li-Po cell directly to `VCC_5V`.
-- The receiver and audio output module are not part of this firmware slice.
+- The desktop receiver application is not part of this firmware slice; the speaker (I2S TX) is.
