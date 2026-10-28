@@ -59,6 +59,8 @@ class Collector(threading.Thread):
                 pkt, _ = self.sock.recvfrom(4096)
             except socket.timeout:
                 continue
+            except OSError:
+                break  # 套接字已被 stop() 关闭
             if len(pkt) < HEADER.size:
                 continue
             magic, ver, flags, hlen, seq, rate, samples, plen = HEADER.unpack_from(pkt, 0)

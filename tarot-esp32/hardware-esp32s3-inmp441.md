@@ -67,6 +67,21 @@ I2S1 做主控发送，16 kHz / 16-bit / mono，默认引脚 `GPIO15(BCLK)/16(LR
 printf 'TONE' | nc -u -w1 <board-ip> 5001
 ```
 
+## 文字转语音（TTS）下行
+
+`tools/tts_play.py` 用 Windows SAPI（离线，默认 `Microsoft Huihui Desktop`）合成 wav，
+重采样为 16 kHz/单声道/s16LE 后按 20 ms 一帧推到板子，板子直接写 I2S 播放：
+
+```bash
+python tools/tts_play.py --ip <board-ip> --text "你好"
+python tools/tts_play.py --ip <board-ip> --text "你好" --verify   # 用咪头回采自证
+python tools/tts_play.py --ip <board-ip> --text "hello" --voice "Microsoft Zira Desktop"
+```
+
+已验证（2026-10-28）：合成「你好，我是这块板子的扬声器。」3.90 s，194 帧实时推送，
+咪头回采静音基线 RMS 108、峰值 448、21 帧越过 2 倍基线阈值，判定 PASS。
+语音能量天然低于满幅正弦，验证阈值按「播放前基线 ×2」动态取，不要用固定 600。
+
 ## Constraints
 
 - Do not drive GPIO0 low during ordinary startup.
