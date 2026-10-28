@@ -26,3 +26,6 @@ spiffs_data/tarot_*.rgb565
 
 # per-config ESP-IDF build dirs (e.g. build-audio-s3)
 build-*/
+
+# local build credentials (never commit)
+audio.env

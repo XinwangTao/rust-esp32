@@ -2,8 +2,8 @@
   "schema": "archify-workflow-v3",
   "name": "esp32s3-inmp441-firmware",
   "title": "ESP32-S3 INMP441 Wi-Fi UDP 发射端固件",
-  "status": "build_verified_hardware_acceptance_pending_2026-10-26",
-  "source": "rust-esp32-main-inspection-2026-10-26; firmware-brief-draft-2026-10-26; user-confirmed-workflow-2026-10-26; implementation-static-check-2026-10-26; esp32s3-build-verified-2026-10-26; udp-receiver-tool-selftest-2026-10-27",
+  "status": "hardware_acceptance_passed_2026-10-28",
+  "source": "rust-esp32-main-inspection-2026-10-26; firmware-brief-draft-2026-10-26; user-confirmed-workflow-2026-10-26; implementation-static-check-2026-10-26; esp32s3-build-verified-2026-10-26; udp-receiver-tool-selftest-2026-10-27; hardware-acceptance-2026-10-28",
   "nodes": [
     {"id": "boot", "type": "system", "label": "启动配置与 NVS 初始化"},
     {"id": "wifi", "type": "process", "label": "Wi-Fi STA 连接并取得 IP"},
