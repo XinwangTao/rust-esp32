@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>上行目标地址自学习</title>
+<style>
+:root{color-scheme:light;--ink:#18212b;--muted:#607080;--line:#b8c5cf;--surface:#f5f7f8;--system:#d9ecf4;--process:#e4eee1;--manual:#f7e7c9;--fail:#f3d7d2}
+*{box-sizing:border-box}body{margin:0;background:#fff;color:var(--ink);font:15px/1.5 system-ui,"Microsoft YaHei",sans-serif}main{max-width:1240px;margin:0 auto;padding:28px 24px 44px}h1{font-size:28px;margin:0 0 6px}p{margin:4px 0;color:var(--muted)}.meta{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0 22px}.tag{border:1px solid var(--line);padding:4px 9px;border-radius:4px;background:var(--surface);font-size:13px}.legend{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0 18px;color:var(--muted);font-size:13px}.legend span:before{content:"";display:inline-block;width:12px;height:12px;margin-right:5px;vertical-align:-2px;border:1px solid var(--line)}.l-system:before{background:var(--system)}.l-process:before{background:var(--process)}.l-manual:before{background:var(--manual)}.l-fail:before{background:var(--fail)}.flow{border:1px solid var(--line);background:var(--surface);padding:22px;overflow:auto}.row{display:grid;grid-template-columns:repeat(7,minmax(150px,1fr));gap:26px;min-width:1180px;align-items:center}.node{min-height:92px;border:1px solid var(--line);border-radius:5px;padding:11px 10px;display:flex;align-items:center;justify-content:center;text-align:center;font-weight:650;position:relative}.system{background:var(--system)}.process{background:var(--process)}.manual{background:var(--manual)}.arrow{position:absolute;right:-27px;top:50%;width:26px;border-top:2px solid #71808c}.arrow:after{content:"";position:absolute;right:-1px;top:-5px;border-left:7px solid #71808c;border-top:5px solid transparent;border-bottom:5px solid transparent}.loop{margin-top:14px;border:1px dashed #71808c;border-radius:5px;padding:10px 12px;color:var(--muted);font-size:13px;background:#fff}.failures{margin-top:22px;display:grid;grid-template-columns:repeat(5,1fr);gap:14px}.failure{background:var(--fail);border:1px solid #c9958b;border-radius:5px;padding:12px;font-size:14px}.failure strong{display:block;margin-bottom:4px}.section{margin-top:24px;border-top:1px solid var(--line);padding-top:16px}ul{margin:8px 0;padding-left:20px}code{background:#eef1f3;padding:1px 4px;border-radius:3px}@media(max-width:700px){main{padding:22px 14px}h1{font-size:23px}.failures{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<h1>上行目标地址自学习</h1>
+<p>Archify workflow · 状态：<strong>已确认，实施中（2026-10-29）</strong> · 目的：PC 换网段/换 IP 后不必重烧固件，设备从下行包学习接收端地址</p>
+<div class="meta"><span class="tag">L1 流程变更</span><span class="tag">tarot-esp32 固件</span><span class="tag">UDP 5001 下行 → 学习</span><span class="tag">AUD0 帧格式不变</span><span class="tag">不写 NVS</span></div>
+<div class="legend"><span class="l-system">系统/验收</span><span class="l-process">处理</span><span class="l-manual">人工/外部触发</span><span class="l-fail">失败/兜底出口</span></div>
+<section class="flow" aria-label="上行目标自学习主流程">
+<div class="row">
+<div class="node system">启动配置<br>Wi-Fi STA 取得 IP<span class="arrow"></span></div>
+<div class="node process">载入编译期<br>AUDIO_UDP_TARGET<br>作初始目标<span class="arrow"></span></div>
+<div class="node process">按当前目标<br>发送 AUD0<br>上行帧<span class="arrow"></span></div>
+<div class="node manual">PC 下行包到达<br>UDP 5001<br>（朗读/TONE/PIN）<span class="arrow"></span></div>
+<div class="node process">从下行来源<br>取出对端 IP<span class="arrow"></span></div>
+<div class="node process">切换上行目标<br>只换 IP<br>端口沿用 5000<span class="arrow"></span></div>
+<div class="node system">后续上行发往新目标<br>包率/丢包验收</div>
+</div>
+<div class="loop">回环：切换后的下一帧起即发往新目标（<code>switch → uplink</code>），不需要重新连接，也不重置音频序号。</div>
+<div class="failures">
+<div class="failure"><strong>从未收到下行包</strong>一直用编译期 <code>AUDIO_UDP_TARGET</code>，与今天的行为完全一致。</div>
+<div class="failure"><strong>来源是临时端口</strong>只学 IP，端口固定沿用编译期端口（5000）。</div>
+<div class="failure"><strong>多台 PC 交替下行</strong>以最近一次来源为准，最后发言的一方拿到上行。</div>
+<div class="failure"><strong>学到的 IP 不可达</strong>上行照发并累计丢包；重启或收到新下行包即纠正。</div>
+<div class="failure"><strong>切换瞬间有在途帧</strong>后续帧直接发往新目标，包序号不回退、不重排。</div>
+</div>
+</section>
+<section class="section"><strong>边界与约束</strong><ul><li>改动范围：<code>components/tarot_core/src/lib.rs</code> 的上行目标选择；AUD0 帧格式、下行端口语义都不动。</li><li>只学 IP 不学端口；同一时刻只有一个上行目标，不做多接收端复制。</li><li><strong>不写 NVS</strong>：重启回到编译期目标，避免把错误地址固化下来。</li><li>不做：广播模式、mDNS 发现、多接收端负载分担（可作为后续独立变更）。</li></ul></section>
+<section class="section"><strong>已决问题（用户确认）</strong><ul><li>学习范围：<strong>任何来源的下行包都学</strong>，不做白名单/令牌。</li><li><strong>不加</strong> <code>TARGET:reset</code> 控制帧；重启即回到编译期目标。</li><li>PC 多实例：以最近一次下行来源为准（同一 5001 端口，天然只有一个发送方）。</li></ul></section>
+</main>
+</body>
+</html>

@@ -17,3 +17,5 @@ dependencies:
   espressif/esp_lcd_st77916: '*'
   lvgl/lvgl: ^8.3
   espressif/esp_lcd_gc9a01: '*'
+  # 2.5+ 依赖 esp-dl 3.3.x（要 IDF 5.4 的 MALLOC_CAP_SIMD），本机 IDF 5.3.1 只能用 2.4 线
+  espressif/esp-sr: ~2.4.0

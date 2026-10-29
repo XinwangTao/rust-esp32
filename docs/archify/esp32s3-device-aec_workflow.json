@@ -1,0 +1,51 @@
+{
+  "schema": "archify-workflow-v3",
+  "name": "esp32s3-device-aec",
+  "title": "设备端回声消除（esp-sr AEC）：上行链路插入 AEC，PC 侧退出半双工",
+  "status": "verified-2026-10-29 (esp-sr 2.4.7 / FD_LOW_COST / frame=512 / PC mic_gate=off 已切)",
+  "source": "user-request-2026-10-29(按推荐方式优化); docs/research/2026-10-29-audio-pipeline-research.md(esp-sr AEC API 与资源表); main/audio_transmitter.cc(320 采样/20ms 分帧); main/audio_speaker.cc(下行播放); mic-desktop/micapp/gate.py(现行 MicGate 半双工)",
+  "nodes": [
+    {"id": "init", "type": "process", "label": "启动初始化：拉 esp-sr 组件，aec_create(16000, 1, AEC_MODE_FD_LOW_COST)，缓冲走 PSRAM"},
+    {"id": "capture", "type": "system", "label": "I2S0 采集 320 采样 / 20 ms（现有链路，不改）"},
+    {"id": "ref", "type": "process", "label": "播放旁路：下行 PCM 写 I2S1 的同时拷进 ref 环形缓冲"},
+    {"id": "reblock", "type": "process", "label": "重分块 320 ↔ AEC 帧长（32 ms = 512 采样）"},
+    {"id": "aec", "type": "process", "label": "aec_process(mic, ref, out) 逐帧消回声"},
+    {"id": "uplink", "type": "process", "label": "回 320 帧 → AUD0 上行（帧格式与端口语义不变）"},
+    {"id": "pcswitch", "type": "manual", "label": "PC 侧撤销 MicGate 静音（改回全双工，支持播放中插话）"},
+    {"id": "accept", "type": "system", "label": "验收：播放中插话能转写、无回采重复、包率 50 pkt/s"}
+  ],
+  "edges": [
+    {"from": "init", "to": "capture", "label": "AEC 句柄就绪"},
+    {"from": "init", "to": "ref", "label": "分配 ref 环形缓冲"},
+    {"from": "capture", "to": "reblock", "label": "320 采样帧"},
+    {"from": "reblock", "to": "aec", "label": "512 采样 mic 帧"},
+    {"from": "ref", "to": "aec", "label": "512 采样 ref 帧（对齐播放）"},
+    {"from": "aec", "to": "reblock", "label": "512 干净帧"},
+    {"from": "reblock", "to": "uplink", "label": "320 采样帧"},
+    {"from": "uplink", "to": "accept", "label": "连续包率/丢包统计"},
+    {"from": "accept", "to": "pcswitch", "label": "固件验收通过后手动切换"}
+  ],
+  "failure_exits": [
+    {"from": "init", "condition": "esp-sr 组件拉不下来或与 IDF 5.3.1 不兼容", "to": "放弃设备端 AEC，保留现行 PC 侧 MicGate 半双工，把不兼容原因写进调研文档"},
+    {"from": "init", "condition": "PSRAM 分配失败 / aec_create 返回 NULL", "to": "直通：mic 原样上行，只打一条告警，协议与 PC 侧都不变"},
+    {"from": "aec", "condition": "CPU 不够，I2S 读超时或上行掉到 50 pkt/s 以下", "to": "降档 SR_LOW_COST（18.8 KB 内部 RAM / 64 KB PSRAM）；仍不够则回退直通"},
+    {"from": "aec", "condition": "ref 与 mic 时延抖动过大，回声消不干净", "to": "不执行 pcswitch，保留 MicGate 兜底（半双工仍可用）"},
+    {"from": "pcswitch", "condition": "撤销门控后出现回采重复转写或用户语音被削", "to": "恢复 mic_mute_tail_s，门控与 AEC 并存；必要时调整 NLP 档位再验"}
+  ],
+  "constraints": {
+    "scope": "仅 tarot-esp32 固件采集→上行链路插入 AEC，外加 mic-desktop 的 MicGate 默认开关；不改 AUD0 帧格式、不改 5000/5001 端口语义",
+    "contract_stable": "上行帧仍是 20 B 头 + 320 采样 s16LE；PC 端不升级也能收",
+    "latency": "AEC 以 32 ms 为处理块，上行端到端延迟预计增加 32–64 ms（需实测确认）",
+    "flash": "当前 app 1.1 MB，esp-sr + esp-dl 预计 +1–2 MB；factory 分区 4 MB（partitions.csv），够用但需复核",
+    "single_variable": "本轮只上 AEC，不接唤醒词/ASR 模型，不接 NS 降噪",
+    "reversible": "代码内保留直通开关（AEC 初始化失败即直通），PC 侧用 mic_mute_tail_s 保留回退能力",
+    "out_of_scope": "唤醒词、设备端 ASR、NS 降噪、Opus 编码、40 ms 聚合发送"
+  },
+  "references": [
+    "https://docs.espressif.com/projects/esp-sr/en/latest/esp32s3/acoustic_echo_cancellation/README.html",
+    "https://components.espressif.com/components/espressif/esp-sr",
+    "https://github.com/espressif/esp-skainet/tree/master/examples/voice_communication",
+    "docs/research/2026-10-29-audio-pipeline-research.md",
+    "docs/archify/esp32s3-inmp441-uplink-target_workflow.html"
+  ]
+}

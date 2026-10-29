@@ -1,0 +1,59 @@
+{
+  "schema": "archify-workflow-v3",
+  "name": "esp32s3-device-vad",
+  "title": "设备端加 esp_vad：AEC → NS → VAD，逐帧结论随上行包送到 PC",
+  "status": "implemented-2026-10-29",
+  "source": "managed_components/espressif__esp-sr 2.4.7（include/esp32s3/esp_vad.h）；tarot-esp32/main/audio_vad.cc/.h（新增）、audio_transmitter.cc、audio_speaker.cc、components/tarot_core/src/lib.rs；mic-desktop/micapp/udp_receiver.py、vad.py、main.py",
+  "supersedes": "docs/archify/esp32s3-afe-integration_workflow.html（AFE 一体化方案实测失败）",
+  "nodes": [
+    { "id": "capture", "type": "system", "label": "采集任务：I2S 320 采样 / 20 ms" },
+    { "id": "aec", "type": "process", "label": "AEC（已验证）：aec_process 512 采样 / 32 ms" },
+    { "id": "ns", "type": "process", "label": "NS（已验证）：拆两个 160 子帧跑 WebRTC NS" },
+    { "id": "vad", "type": "process", "label": "esp_vad 判帧：vad_process，VAD_MODE_1，20 ms" },
+    { "id": "flags", "type": "process", "label": "上行 flags：bit1=本帧有 VAD 结论，bit0=结论为语音" },
+    { "id": "pc", "type": "system", "label": "PC 切句：有 bit1 用 VAD，否则回退自适应能量阈值" },
+    { "id": "run", "type": "process", "label": "正常链路：转写 → 气泡 → 落盘 → 自动回读" },
+    { "id": "stat", "type": "manual", "label": "STAT 回包：vad=on，vad_frames / vad_speech 计数" }
+  ],
+  "edges": [
+    { "from": "capture", "to": "aec", "label": "原始麦克风" },
+    { "from": "aec", "to": "ns", "label": "消回声后的信号" },
+    { "from": "ns", "to": "vad", "label": "降噪后的信号（信噪比更好）" },
+    { "from": "vad", "to": "flags", "label": "逐帧结论写进包头" },
+    { "from": "flags", "to": "pc", "label": "UDP 5000" },
+    { "from": "pc", "to": "run", "label": "切出的句子" },
+    { "from": "vad", "to": "stat", "label": "计数供验收，不接串口" }
+  ],
+  "failure_exits": [
+    { "from": "vad", "condition": "vad_create 失败", "to": "上行 flags 恒 0，PC 端 hint=None 自动走能量阈值，等于回到改造前的行为" },
+    { "from": "pc", "condition": "全双工时播放声被判成人声", "to": "PC 端文本去重 + 连续 3 次刹车兜底；仍频繁则切回半双工 mic_gate=on" },
+    { "from": "vad", "condition": "稳态噪声（风扇/空调）持续被判成人声", "to": "VAD_MODE_1 已偏激进，仍误判就提到 VAD_MODE_2/3，改一行常量" },
+    { "from": "pc", "condition": "老固件（flags 恒 0）或新固件配老 PC 端", "to": "老固件 bit1=0 → PC 走能量阈值兜底；老 PC 端不读 flags，行为不变" },
+    { "from": "flags", "condition": "VAD 切点与上行帧边界不一致", "to": "不适用：vad_process 原生支持 10/20/30 ms，每帧正好 20 ms，不需要重分块，也不增加延迟" }
+  ],
+  "constraints": {
+    "scope": "新增 main/audio_vad.cc/.h；audio_transmitter.cc 在 NS 之后调 VAD 并写 flags；audio_speaker.cc 的 STAT 换成 vad= 字段；components/tarot_core/src/lib.rs 的包头加 flags 形参",
+    "aec_ns_untouched": "AEC / NS 的实现与参数一行未动，VAD 只是追加在最后",
+    "order": "顺序固定 AEC → NS → VAD：AEC 必须吃原始 mic + 播放参考，VAD 要在降噪之后才有更好的信噪比",
+    "protocol": "包头 20 字节不变，只占用原本恒 0 的 flags 位：bit1=有结论，bit0=语音。两位缺一不可，否则老固件与『判为静音』无法区分",
+    "out_of_scope": "AFE 的 AGC、唤醒词、多麦阵列、设备端切句（切句仍在 PC 端做）"
+  },
+  "decisions": [
+    { "question": "AFE 一体化方案跑不通时怎么办", "answer": "按事先声明的回退方案改用独立 esp_vad，复用已验证的 AEC→NS 链路；AFE 失败记录留在 esp32s3-afe-integration_workflow" },
+    { "question": "VAD 放在链路哪一段", "answer": "AEC → NS → VAD，VAD 吃降噪后的信号" },
+    { "question": "VAD 档位", "answer": "VAD_MODE_1（aggressive）；远端小声靠前面 NS 保信噪比，不靠放宽 VAD" }
+  ],
+  "verification": [
+    "上行 50 pkt/s 稳定（连续 20 s 每秒 49~51），1000/1000 包都带 VAD 结论，其中 153 帧判为语音",
+    "STAT：aec=on ns=on vad=on，vad_frames 持续增长（1674 → …），vad_speech=317；inner_free 181 KB → 222 KB（AFE 卸载后回补）",
+    "PC 端日志 hint 计数非零并随说话增长：hint=41/734 → 117/1236 → 881/5983；停止说话后冻结不动",
+    "关键证据：切出的句子 utterance rms=42~73 而能量阈值 thr=66~74——这些正是能量 VAD 切不出来的低声句子",
+    "端到端：说话期间产生新转写（15:07:17、15:07:52），说明 VAD → flags → PC 切句 → STT 全链路通",
+    "离线回归 21 项全 PASS（F:\\cache\\adaptive_vad_test.py），其中 3 项覆盖 hint 路径：低声+hint=真 能切句、大声+hint=假 不切句、提示计数正确"
+  ],
+  "references": [
+    "docs/archify/esp32s3-afe-integration_workflow.html",
+    "docs/archify/esp32s3-device-ns_workflow.html",
+    "docs/archify/mic-desktop-adaptive-vad_workflow.html"
+  ]
+}

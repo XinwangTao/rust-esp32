@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>设备端回声消除（esp-sr AEC）</title>
+<style>
+:root{color-scheme:light;--ink:#18212b;--muted:#607080;--line:#b8c5cf;--surface:#f5f7f8;--system:#d9ecf4;--process:#e4eee1;--manual:#f7e7c9;--fail:#f3d7d2}
+*{box-sizing:border-box}body{margin:0;background:#fff;color:var(--ink);font:15px/1.5 system-ui,"Microsoft YaHei",sans-serif}main{max-width:1240px;margin:0 auto;padding:28px 24px 44px}h1{font-size:28px;margin:0 0 6px}p{margin:4px 0;color:var(--muted)}.meta{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0 22px}.tag{border:1px solid var(--line);padding:4px 9px;border-radius:4px;background:var(--surface);font-size:13px}.legend{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0 18px;color:var(--muted);font-size:13px}.legend span:before{content:"";display:inline-block;width:12px;height:12px;margin-right:5px;vertical-align:-2px;border:1px solid var(--line)}.l-system:before{background:var(--system)}.l-process:before{background:var(--process)}.l-manual:before{background:var(--manual)}.l-fail:before{background:var(--fail)}.flow{border:1px solid var(--line);background:var(--surface);padding:22px;overflow:auto}.row{display:grid;grid-template-columns:repeat(7,minmax(138px,1fr));gap:26px;min-width:1150px;align-items:center}.node{min-height:92px;border:1px solid var(--line);border-radius:5px;padding:11px 10px;display:flex;align-items:center;justify-content:center;text-align:center;font-weight:650;position:relative}.system{background:var(--system)}.process{background:var(--process)}.manual{background:var(--manual)}.arrow{position:absolute;right:-27px;top:50%;width:26px;border-top:2px solid #71808c}.arrow:after{content:"";position:absolute;right:-1px;top:-5px;border-left:7px solid #71808c;border-top:5px solid transparent;border-bottom:5px solid transparent}.loop{margin-top:14px;border:1px dashed #71808c;border-radius:5px;padding:10px 12px;color:var(--muted);font-size:13px;background:#fff}.branch{margin-top:16px;display:grid;grid-template-columns:minmax(138px,1fr) 3fr;gap:26px;min-width:1150px;align-items:center}.branch .note{border:1px dashed #71808c;border-radius:5px;padding:10px 12px;color:var(--muted);font-size:13px;background:#fff}.failures{margin-top:22px;display:grid;grid-template-columns:repeat(5,1fr);gap:14px}.failure{background:var(--fail);border:1px solid #c9958b;border-radius:5px;padding:12px;font-size:14px}.failure strong{display:block;margin-bottom:4px}.section{margin-top:24px;border-top:1px solid var(--line);padding-top:16px}ul{margin:8px 0;padding-left:20px}code{background:#eef1f3;padding:1px 4px;border-radius:3px}table{border-collapse:collapse;margin:8px 0;font-size:14px}td,th{border:1px solid var(--line);padding:5px 9px;text-align:left}th{background:var(--surface)}@media(max-width:700px){main{padding:22px 14px}h1{font-size:23px}.failures{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<h1>设备端回声消除（esp-sr AEC）</h1>
+<p>Archify workflow · 状态：<strong>已验收（2026-10-29）</strong> · 目的：让板子自己消掉扬声器回声，PC 侧不再需要「朗读期间捂嘴」，支持边说边播</p>
+<div class="meta"><span class="tag">L1 流程变更</span><span class="tag">tarot-esp32 固件</span><span class="tag">esp-sr AEC</span><span class="tag">AUD0 帧格式不变</span><span class="tag">+ mic-desktop 门控开关</span></div>
+<div class="legend"><span class="l-system">系统/验收</span><span class="l-process">处理</span><span class="l-manual">人工/外部触发</span><span class="l-fail">失败/兜底出口</span></div>
+<section class="flow" aria-label="设备端 AEC 主流程">
+<div class="row">
+<div class="node process">启动初始化<br>esp-sr 组件<br><code>aec_create</code><br>缓冲走 PSRAM<span class="arrow"></span></div>
+<div class="node system">I2S0 采集<br>320 采样 / 20 ms<br>（现有链路不改）<span class="arrow"></span></div>
+<div class="node process">重分块<br>320 ↔ 512<br>（32 ms 帧）<span class="arrow"></span></div>
+<div class="node process">AEC<br><code>aec_process</code><br>(mic, ref, out)<span class="arrow"></span></div>
+<div class="node process">回 320 帧<br>→ AUD0 上行<br>格式不变<span class="arrow"></span></div>
+<div class="node system">验收<br>插话可转写<br>包率 50 pkt/s<span class="arrow"></span></div>
+<div class="node manual">PC 侧撤销 MicGate<br>改回全双工</div>
+</div>
+<div class="branch">
+<div class="node process">播放旁路<br>ref 环形缓冲</div>
+<div class="note">下行 PCM 写 I2S1 的同时拷一份进 ref 环形缓冲，按 512 采样对齐喂给 <code>aec_process</code> 的第 2 个参数（参考信号 = 「我们正在播什么」）。<br>回环：<code>重分块</code> 同时承担「320 → 512」和「512 → 320」两个方向，8 个 320 帧正好拼 5 个 512 帧。</div>
+</div>
+<div class="loop">回环：<code>capture → reblock → aec → reblock → uplink</code> 每 32 ms 走一圈；ref 由播放线程异步填充，AEC 内部自适应对齐延迟。</div>
+<div class="failures">
+<div class="failure"><strong>组件拿不到/不兼容</strong>esp-sr 拉不下来或与 IDF 5.3.1 冲突：放弃设备端 AEC，保留现行 PC 侧 MicGate，理由写进调研文档。</div>
+<div class="failure"><strong>PSRAM 分配失败</strong><code>aec_create</code> 返回 NULL：直通（mic 原样上行），只告警，协议与 PC 侧都不变。</div>
+<div class="failure"><strong>CPU 不够</strong>I2S 读超时或包率掉到 50 以下：降档 <code>SR_LOW_COST</code>（18.8 KB 内部 RAM / 64 KB PSRAM）；仍不够回退直通。</div>
+<div class="failure"><strong>ref/mic 时延抖动大</strong>回声消不干净：不执行 pcswitch，MicGate 继续兜底（半双工仍可用）。</div>
+<div class="failure"><strong>撤销门控后变差</strong>出现回采重复或用户语音被削：恢复 <code>mic_mute_tail_s</code>，门控与 AEC 并存，调 NLP 档位再验。</div>
+</div>
+</section>
+<section class="section"><strong>为什么现在做</strong>
+<table>
+<tr><th>前置条件</th><th>状态</th></tr>
+<tr><td>8 MB PSRAM</td><td>已开并实测 <code>psram_total=8388608</code></td></tr>
+<tr><td>240 MHz + -O2</td><td>已上，实机验收通过</td></tr>
+<tr><td>双向链路（有 ref）</td><td>已有：PC → UDP 5001 → I2S1 播放</td></tr>
+<tr><td>回采重复转写</td><td>已用 MicGate 半双工临时压住，AEC 上线后才有条件真全双工</td></tr>
+</table>
+</section>
+<section class="section"><strong>验收结果（2026-10-29 实测）</strong>
+<table>
+<tr><th>项目</th><th>结果</th></tr>
+<tr><td>组件版本</td><td>esp-sr <strong>2.4.7</strong>（2.5/2.6 依赖 esp-dl 3.3.x，需要 IDF 5.4 的 <code>MALLOC_CAP_SIMD</code>，本机 5.3.1 编不过）</td></tr>
+<tr><td>AEC 帧长</td><td><code>STAT</code> 回包 <code>aec=on frame=512</code>，与官方文档 32 ms 一致</td></tr>
+<tr><td>内存</td><td>PSRAM 占用 ≈134 KB（AEC 107 KB + 自有 27 KB）；<code>inner_free</code> ≈219 KB；固件 +74 KB（1 099 328 → 1 173 184 B）</td></tr>
+<tr><td>回声抑制</td><td>播 7.82 s TTS：上行平均 RMS <strong>97</strong>（环境底噪 104），改造前峰值 <strong>669</strong>；越过 2 倍基线 21 帧 → 0–2 帧</td></tr>
+<tr><td>「真的在播」反证</td><td>两次 STAT 之间 <code>blocks +372</code> / <code>ref_uf +128</code> → 244 块有参考信号 = 7.82 s × 31.25 块/s</td></tr>
+<tr><td>PC 侧全双工</td><td><code>dist/config.json</code> 设 <code>mic_gate: "off"</code>；EXE 运行中播 11.15 s 播报，<strong>零新转写</strong></td></tr>
+<tr><td>残留</td><td>每句开头约 300 ms 收敛期内有 1–2 帧能量冲到 156–171（偶发 418），未见触发 VAD；真出现重复转写把 <code>mic_gate</code> 切回 <code>"auto"</code></td></tr>
+</table>
+</section>
+<section class="section"><strong>边界与约束</strong><ul><li>改动范围：固件采集→上行链路（新增 AEC 段）+ mic-desktop 的 <code>mic_mute_tail_s</code> 默认值；AUD0 帧格式、5000/5001 端口语义都不动。</li><li>上行仍是 20 B 头 + 320 采样 s16LE，PC 端**不升级也能收**。</li><li>AEC 以 32 ms 为处理块，上行端到端延迟预计 +32–64 ms（需实测确认）。</li><li>体积：当前 app 1.1 MB，esp-sr + esp-dl 预计 +1–2 MB；<code>factory</code> 分区 4 MB，够但需复核。</li><li>本轮只上 AEC 单个变量：不接唤醒词/ASR 模型，不接 NS 降噪，不改编码。</li><li>始终保留直通开关（初始化失败即直通）与 PC 侧门控回退。</li></ul></section>
+<section class="section"><strong>已决问题（用户确认 2026-10-29）</strong><ul><li>AEC 档位：<strong><code>FD_LOW_COST</code></strong>（30.9 KB 内部 RAM / 90 KB PSRAM；实测不达标再降 <code>SR_LOW_COST</code>）。</li><li>PC 侧：<strong>保留 <code>mic_mute_tail_s</code> 开关</strong>，验收通过后由配置关闭，不删代码。</li><li>本轮<strong>只上 AEC</strong>，不接 NS 降噪（单变量，便于归因）。</li></ul></section>
+</main>
+</body>
+</html>

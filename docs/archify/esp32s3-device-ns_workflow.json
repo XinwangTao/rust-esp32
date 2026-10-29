@@ -1,0 +1,145 @@
+{
+  "schema": "archify-workflow-v3",
+  "name": "esp32s3-device-ns",
+  "title": "设备端 WebRTC 降噪：AEC 之后逐帧抑制稳态环境噪声",
+  "status": "implemented-2026-10-29",
+  "source": "tarot-esp32/main/audio_transmitter.cc(采集→AEC→上行)、audio_aec.cc(现有 AEC)、audio_speaker.cc(STAT 回包)；managed_components/espressif__esp-sr/include/esp32s3/esp_ns.h；2026-10-29 底噪实测",
+  "nodes": [
+    {
+      "id": "capture",
+      "type": "system",
+      "label": "I2S0 采集 320 采样 / 20 ms（现有，不改）"
+    },
+    {
+      "id": "aec",
+      "type": "process",
+      "label": "AEC 消回声 aec_process，输出 320（现有，不改）"
+    },
+    {
+      "id": "ns",
+      "type": "process",
+      "label": "新增 NS 降噪：ns_create(10) + ns_process，320 采样拆两个 160 子帧原地处理"
+    },
+    {
+      "id": "uplink",
+      "type": "process",
+      "label": "打包 AUD0 → UDP 5000，50 pkt/s / 256 kbit/s 不变"
+    },
+    {
+      "id": "pc",
+      "type": "system",
+      "label": "PC 端 VAD → 转写（阈值 350 不改）"
+    },
+    {
+      "id": "stat",
+      "type": "process",
+      "label": "STAT 回包新增 ns=on|off 与 ns_us_avg / ns_us_max"
+    },
+    {
+      "id": "bench",
+      "type": "manual",
+      "label": "验收：同环境录音前后对比 + 2–3 米说话实测"
+    }
+  ],
+  "edges": [
+    {
+      "from": "capture",
+      "to": "aec",
+      "label": "320 采样 / 20 ms"
+    },
+    {
+      "from": "aec",
+      "to": "ns",
+      "label": "消回声后的 320 采样"
+    },
+    {
+      "from": "ns",
+      "to": "uplink",
+      "label": "降噪后的 320 采样"
+    },
+    {
+      "from": "uplink",
+      "to": "pc",
+      "label": "AUD0 包"
+    },
+    {
+      "from": "ns",
+      "to": "stat",
+      "label": "每帧耗时"
+    },
+    {
+      "from": "uplink",
+      "to": "bench",
+      "label": "录成 wav 做前后对比"
+    }
+  ],
+  "failure_exits": [
+    {
+      "from": "ns",
+      "condition": "ns_create 返回 NULL",
+      "to": "打日志 + STAT 报 ns=off，上行保持 AEC 输出直通，链路不中断"
+    },
+    {
+      "from": "ns",
+      "condition": "抑制过头伤到语音（近讲发闷、转写丢字）",
+      "to": "切 ns_pro_create(10, 0, 16000) 温和档；仍不行整段关掉"
+    },
+    {
+      "from": "ns",
+      "condition": "CPU 超预算，包率掉出 50 pkt/s",
+      "to": "先关 NS 回退到只有 AEC；再不够才降 AEC 档位"
+    },
+    {
+      "from": "ns",
+      "condition": "噪声其实是远处人声 / 电视 / 多人说话",
+      "to": "降噪算法无效，不在本轮范围；不当作失败，另立 VAD 分段课题"
+    },
+    {
+      "from": "uplink",
+      "condition": "降噪后音量整体变小，VAD 阈值 350 偏高",
+      "to": "本轮不动 VAD；先用 STAT 与录音指标确认，下一轮再谈阈值"
+    }
+  ],
+  "constraints": {
+    "scope": "只改固件：audio_transmitter.cc 在 audio_aec_filter() 后加一行 audio_ns_process()，新增 audio_ns.cc/.h，audio_speaker.cc 的 STAT 加字段；mic-desktop 一行不动",
+    "order": "AEC → NS，顺序不可颠倒（AEC 需要原始 mic 与 ref 做自适应）",
+    "no_reblock": "NS 就地处理、不引入额外延迟，但库只吃 10 ms 帧，内部拆两个 160 采样子帧（esp_ns.h 注释称支持 10/20/30，2.4.7 在 esp_ns.c:29 断言 frame_length_ms==10，传 20 会 panic 重启）",
+    "no_flash_growth": "实测 +20 352 B（1 173 184 → 1 193 536 B）：符号已在库里，但调用路径会把代码段拉进镜像，不是零增长",
+    "format_unchanged": "AUD0 20 B 头 + 320 采样 s16LE / 50 pkt/s 不变，PC 端不升级也能收",
+    "always_available": "初始化失败即直通，STAT 如实报 ns=off",
+    "out_of_scope": "人声干扰分离、混响抑制、啸叫处理、VAD 阈值自适应、运行期开关、神经网络降噪（NSNet2）",
+    "flash_cost": "实测 +20 352 B（1 173 184 → 1 193 536 B），不是零增长"
+  },
+  "baseline": {
+    "date": "2026-10-29",
+    "recording": "F:/cache/base/noise_before.wav",
+    "detail": "10.04 s / 502 包；环境底噪 RMS 中位 102、p95 125、最大 162；VAD 阈值 350",
+    "aec_cpu": "avg 9.31 ms / 32 ms = 29.1%，peak 11.38 ms = 35.6%"
+  },
+  "references": [
+    "docs/archify/esp32s3-device-aec_workflow.html",
+    "tarot-esp32/managed_components/espressif__esp-sr/include/esp32s3/esp_ns.h"
+  ],
+  "decisions": [
+    {
+      "question": "用哪档 NS",
+      "answer": "标准档 ns_create（非 ns_pro_create）"
+    },
+    {
+      "question": "要不要留下行控制帧 NS:on|off",
+      "answer": "不做，STAT 观测 + 重新烧录回退"
+    },
+    {
+      "question": "CPU 通过线",
+      "answer": "AEC+NS 合计 avg≤45% / peak≤60% 且 50 pkt/s 丢包 0"
+    }
+  ],
+  "verification": [
+    "STAT：ns=on ns_frames=906 ns_us_avg=1606 ns_us_max=4213 ns_skip=0",
+    "同一房间底噪 RMS 中位 102 → 25.2，p95 125 → 33.3，最大 162 → 44.9（约 -12 dB）",
+    "降噪后 10.00 s 收 500 包 = 50.0 pkt/s，零丢包",
+    "CPU 单核：NS 16.1%（峰 42.1%），AEC 25.3%（峰 37.7%），合计平均 41.4%",
+    "峰值口径未合并统计，按最坏相加可达约 80%，需另加单帧合并耗时才能定论",
+    "未验证：2-3 米说话在有稳态噪声时是否仍触发 VAD 并正确转写"
+  ]
+}

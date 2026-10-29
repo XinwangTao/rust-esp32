@@ -1,0 +1,43 @@
+{
+  "schema": "archify-workflow-v3",
+  "name": "esp32s3-inmp441-uplink-target",
+  "title": "上行目标地址自学习（从下行包学 PC IP）",
+  "status": "confirmed-2026-10-29 (用户: 都按你推荐的)",
+  "source": "user-request-2026-10-29; lib.rs-static-inspection-2026-10-29(option_env AUDIO_UDP_TARGET); github-atomic14-esp32-walkie-talkie(udp-broadcast)-2026-10-29",
+  "nodes": [
+    {"id": "boot", "type": "system", "label": "启动配置 / Wi-Fi STA 连接取得 IP"},
+    {"id": "seed", "type": "process", "label": "载入编译期 AUDIO_UDP_TARGET 作为初始上行目标"},
+    {"id": "uplink", "type": "process", "label": "按当前目标发送 AUD0 上行帧"},
+    {"id": "downlink", "type": "manual", "label": "PC 下行包到达 UDP 5001（朗读 / TONE / PIN）"},
+    {"id": "learn", "type": "process", "label": "从下行来源地址取出对端 IP"},
+    {"id": "switch", "type": "process", "label": "切换上行目标（只换 IP，端口沿用 5000）"},
+    {"id": "verify", "type": "system", "label": "后续上行发往新目标，链路自愈验收"}
+  ],
+  "edges": [
+    {"from": "boot", "to": "seed", "label": "Wi-Fi 就绪"},
+    {"from": "seed", "to": "uplink", "label": "初始目标"},
+    {"from": "downlink", "to": "learn", "label": "任意合法 AUD0/控制帧"},
+    {"from": "learn", "to": "switch", "label": "IP 与当前目标不同"},
+    {"from": "switch", "to": "uplink", "label": "下一帧起生效"},
+    {"from": "uplink", "to": "verify", "label": "连续包率/丢包统计"}
+  ],
+  "failure_exits": [
+    {"from": "downlink", "condition": "从未收到任何下行包", "to": "一直使用编译期 AUDIO_UDP_TARGET，与现有行为完全一致"},
+    {"from": "learn", "condition": "下行来源是 PC 的临时端口", "to": "只学习 IP，端口固定沿用编译期端口（5000）"},
+    {"from": "switch", "condition": "多台 PC 交替发送下行", "to": "以最近一次来源为准，最后发言的一方获得上行"},
+    {"from": "uplink", "condition": "学到的 IP 已不可达", "to": "上行照发并累计丢包；重启或收到新下行包即纠正"},
+    {"from": "switch", "condition": "切换瞬间有在途帧", "to": "后续帧直接发往新目标，包序号不回退不重排"}
+  ],
+  "constraints": {
+    "scope": "仅 tarot-esp32 固件上行目标选择逻辑；不改 AUD0 帧格式、不改下行端口语义",
+    "learn_ip_only": "只学 IP，不学端口；端口沿用编译期 AUDIO_UDP_TARGET 的端口",
+    "no_persistence": "不写 NVS，重启后回到编译期目标（安全默认，避免把错误地址固化）",
+    "single_target": "同一时刻只有一个上行目标，不做多接收端复制",
+    "out_of_scope": "广播模式、mDNS 发现、多接收端负载分担"
+  },
+  "references": [
+    "https://github.com/XinwangTao/rust-esp32.git",
+    "https://github.com/atomic14/esp32-walkie-talkie",
+    "docs/research/2026-10-29-audio-pipeline-research.md"
+  ]
+}

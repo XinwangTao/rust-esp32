@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>设备端降噪（esp-sr WebRTC NS）</title>
+<style>
+:root{color-scheme:light;--ink:#18212b;--muted:#607080;--line:#b8c5cf;--surface:#f5f7f8;--system:#d9ecf4;--process:#e4eee1;--manual:#f7e7c9;--fail:#f3d7d2}
+*{box-sizing:border-box}body{margin:0;background:#fff;color:var(--ink);font:15px/1.5 system-ui,"Microsoft YaHei",sans-serif}main{max-width:1240px;margin:0 auto;padding:28px 24px 44px}h1{font-size:28px;margin:0 0 6px}p{margin:4px 0;color:var(--muted)}.meta{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0 22px}.tag{border:1px solid var(--line);padding:4px 9px;border-radius:4px;background:var(--surface);font-size:13px}.legend{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0 18px;color:var(--muted);font-size:13px}.legend span:before{content:"";display:inline-block;width:12px;height:12px;margin-right:5px;vertical-align:-2px;border:1px solid var(--line)}.l-system:before{background:var(--system)}.l-process:before{background:var(--process)}.l-manual:before{background:var(--manual)}.l-fail:before{background:var(--fail)}.flow{border:1px solid var(--line);background:var(--surface);padding:22px;overflow:auto}.row{display:grid;grid-template-columns:repeat(7,minmax(138px,1fr));gap:26px;min-width:1150px;align-items:center}.node{min-height:92px;border:1px solid var(--line);border-radius:5px;padding:11px 10px;display:flex;align-items:center;justify-content:center;text-align:center;font-weight:650;position:relative}.system{background:var(--system)}.process{background:var(--process)}.manual{background:var(--manual)}.arrow{position:absolute;right:-27px;top:50%;width:26px;border-top:2px solid #71808c}.arrow:after{content:"";position:absolute;right:-1px;top:-5px;border-left:7px solid #71808c;border-top:5px solid transparent;border-bottom:5px solid transparent}.loop{margin-top:14px;border:1px dashed #71808c;border-radius:5px;padding:10px 12px;color:var(--muted);font-size:13px;background:#fff}.branch{margin-top:16px;display:grid;grid-template-columns:minmax(138px,1fr) minmax(138px,1fr) 2fr;gap:26px;min-width:1150px;align-items:center}.branch .note{border:1px dashed #71808c;border-radius:5px;padding:10px 12px;color:var(--muted);font-size:13px;background:#fff}.failures{margin-top:22px;display:grid;grid-template-columns:repeat(5,1fr);gap:14px}.failure{background:var(--fail);border:1px solid #c9958b;border-radius:5px;padding:12px;font-size:14px}.failure strong{display:block;margin-bottom:4px}.section{margin-top:24px;border-top:1px solid var(--line);padding-top:16px}ul{margin:8px 0;padding-left:20px}code{background:#eef1f3;padding:1px 4px;border-radius:3px}table{border-collapse:collapse;margin:8px 0;font-size:14px}td,th{border:1px solid var(--line);padding:5px 9px;text-align:left}th{background:var(--surface)}@media(max-width:700px){main{padding:22px 14px}h1{font-size:23px}.failures{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<h1>设备端降噪（esp-sr WebRTC NS）</h1>
+<p>Archify workflow · 状态：<strong>已实现并验收（2026-10-29）</strong> · 目的：稳态环境噪声（风扇/空调/风道）下，让 VAD 不被顶开、2–3 米说话仍能转写</p>
+<div class="meta"><span class="tag">L1 流程变更</span><span class="tag">tarot-esp32 固件</span><span class="tag">esp-sr WebRTC NS</span><span class="tag">固件 +20 KB</span><span class="tag">AUD0 帧格式不变</span><span class="tag">mic-desktop 零改动</span></div>
+<div class="legend"><span class="l-system">系统/验收</span><span class="l-process">处理</span><span class="l-manual">人工/外部触发</span><span class="l-fail">失败/兜底出口</span></div>
+<section class="flow" aria-label="设备端降噪主流程">
+<div class="row">
+<div class="node system">I2S0 采集<br>320 采样 / 20 ms<br>（现有，不改）<span class="arrow"></span></div>
+<div class="node process">AEC 消回声<br><code>aec_process</code><br>输出 320<br>（现有，不改）<span class="arrow"></span></div>
+<div class="node process"><strong>NS 降噪</strong><br><code>ns_create(10)</code><br><code>ns_process</code><br>160 采样 ×2 子帧<span class="arrow"></span></div>
+<div class="node process">打包 AUD0<br>→ UDP 5000<br>50 pkt/s 不变<span class="arrow"></span></div>
+<div class="node system">PC 端 VAD<br>→ 转写<br>（阈值不改）<span class="arrow"></span></div>
+<div class="node process">STAT 回包<br>新增 <code>ns=on|off</code><br><code>ns_us_avg/max</code><span class="arrow"></span></div>
+<div class="node manual">验收<br>现场录音对比<br>+ 3 米实测</div>
+</div>
+<div class="branch">
+<div class="node process">初始化<br><code>ns_create</code><br>失败即直通</div>
+<div class="node process">耗时统计<br><code>esp_timer</code><br>夹在 ns_process</div>
+<div class="note">NS <b>就地处理</b>：进来 320 个采样、出去还是 320 个，<b>不引入额外延迟</b>；但库只吃 10 ms 帧，所以内部拆成两个 160 采样子帧跑（<code>esp_ns.h</code> 注释写“支持 10/20/30”，2.4.7 实现在 <code>esp_ns.c:29</code> 断言 <code>frame_length_ms==10</code>，传 20 会直接 panic 重启——此坑已实测踩过）。<br>顺序固定 <code>AEC → NS</code>：AEC 需要原始 mic 与 ref 做自适应，降噪放在它后面，否则会把 AEC 的参考路径也改掉。<br>输出缓冲 320 字节走内部 RAM，不新增内存池。</div>
+</div>
+<div class="loop">回环：<code>采集 → AEC → NS → 上行</code> 每 20 ms 走一圈；NS 每帧 320 采样，耗时会计入 STAT 的 <code>ns_us_avg</code>，与已有的 <code>us_avg</code>（AEC）分开记，便于分别归因。</div>
+<div class="failures">
+<div class="failure"><strong>ns_create 返回 NULL</strong>打日志 + STAT 报 <code>ns=off</code>，上行保持 AEC 输出（直通），链路不中断，与当初 AEC 初始化失败的兜底一致。</div>
+<div class="failure"><strong>抑制过头伤语音</strong>近讲时声音发闷、转写开始丢字：换 <code>ns_pro_create(10, 0, 16000)</code> 温和档（10 ms 子帧，mode 0），仍不行就整段关掉。</div>
+<div class="failure"><strong>CPU 超预算</strong>AEC 已占 29%（峰值 36%），叠加后若采集线程停顿导致包率掉出 50 pkt/s：先关 NS 回退，再考虑降 AEC 档位。</div>
+<div class="failure"><strong>噪声类型不对</strong>远处人声 / 电视 / 多人说话属于人声干扰，降噪算法基本无效：不在本轮范围，不做承诺，需要靠 VAD 分段另解。</div>
+<div class="failure"><strong>降噪后音量变小</strong>NS 会连带压低底噪，VAD 阈值 350 在高噪环境可能仍偏高：只用 STAT 指标确认后再决定是否调阈值，本轮不动 VAD。</div>
+</div>
+</section>
+<section class="section"><strong>为什么现在做</strong>
+<table>
+<tr><th>前置条件</th><th>状态</th></tr>
+<tr><td>降噪接口可用</td><td><code>libesp_audio_processor.a</code> 里已有 <code>ns_create</code> / <code>ns_process</code> / <code>ns_destroy</code>（与在用的 <code>aec_*</code> 同库）</td></tr>
+<tr><td>体积代价</td><td>实测 <b>+20 352 B</b>（1 173 184 → 1 193 536 B）：符号本就在 <code>libesp_audio_processor.a</code>，但 NS 调用路径会把对应代码段拉进镜像，<b>不是零增长</b>（原图写「体积不变」有误，已按实测修正）</td></tr>
+<tr><td>帧长</td><td><b>只支持 10 ms（160 采样）</b>：头文件注释宣称 10/20/30，实测 <code>ns_create(20)</code> 触发 <code>assert failed: ns_create esp_ns.c:29 (frame_length_ms==10)</code> 并重启。改用 10 ms 子帧，320 采样拆两个跑</td></tr>
+<tr><td>AEC 已上线</td><td>2026-10-29 验收通过，回声已压到环境底噪；此时剩下的主要干扰就是环境噪声</td></tr>
+</table>
+</section>
+<section class="section"><strong>基准数据（2026-10-29 实测，降噪前）</strong>
+<table>
+<tr><th>项目</th><th>结果</th></tr>
+<tr><td>当前环境底噪</td><td><code>F:\cache\base\noise_before.wav</code>（10.04 s / 502 包）：RMS 中位 <strong>102</strong>、p95 <strong>125</strong>、最大 <strong>162</strong></td></tr>
+<tr><td>VAD 阈值</td><td>350（当前房间本来就安静，所以不触发；真上稳态噪声要人为制造后重测）</td></tr>
+<tr><td>AEC 现状</td><td>平均 9.31 ms / 32 ms 帧 = <strong>29.1%</strong>，峰值 11.38 ms = <strong>35.6%</strong>（单核）</td></tr>
+</table>
+</section>
+<section class="section"><strong>边界与约束</strong><ul><li>改动范围：固件 <code>audio_transmitter.cc</code> 在 <code>audio_aec_filter()</code> 之后加一行 <code>audio_ns_process()</code>，新增 <code>audio_ns.cc/.h</code>，<code>audio_speaker.cc</code> 的 STAT 回包加字段。<b>mic-desktop 一行不动</b>。</li><li>上行仍是 20 B 头 + 320 采样 s16LE / 50 pkt/s，<b>PC 端不升级也能收</b>。</li><li>NS 不引入额外延迟（原地 320 采样）；端到端延迟保持 AEC 那 32 ms。</li><li>只处理<b>稳态环境噪声</b>；人声干扰、混响、啸叫不在本轮。</li><li>不做运行期开关、不做自适应强度；初始化失败即直通。</li><li>VAD 阈值本轮不动，先看降噪后指标再决定。</li></ul></section>
+<section class="section"><strong>验收结果（2026-10-29 实测）</strong>
+<table>
+<tr><th>项目</th><th>结果</th></tr>
+<tr><td>初始化</td><td><code>STAT … ns=on ns_frames=906 ns_us_avg=1606 ns_us_max=4213 ns_skip=0</code></td></tr>
+<tr><td>噪声抑制</td><td>同一房间底噪 RMS 中位 <b>102 → 25.2</b>，p95 125 → 33.3，最大 162 → 44.9（约 <b>−12 dB</b>）</td></tr>
+<tr><td>包率</td><td>降噪后 10.00 s 收到 500 包 = <b>50.0 pkt/s，零丢包</b></td></tr>
+<tr><td>CPU（单核）</td><td>NS 平均 1606 µs / 10 ms 帧 = <b>16.1%</b>，峰值 4213 µs = <b>42.1%</b>；同期 AEC 25.3%（峰值 37.7%）→ 合计平均 <b>41.4%</b>，在 ≤45% 线内</td></tr>
+<tr><td>峰值口径待补</td><td>统计只在各自通道记 <code>us_max</code>，<b>无法证明两者峰值不落在同一帧</b>；按最坏相加 ≈80% 已超 60% 线，需另加「单帧合并耗时」统计才能定论</td></tr>
+<tr><td>仍未验证</td><td>2–3 米说话是否仍能触发 VAD 并正确转写（需人现场说话，且应在有稳态噪声的条件下测）</td></tr>
+</table>
+</section>
+<section class="section"><strong>已决问题（用户确认 2026-10-29）</strong><ul><li>档位：<strong>标准档</strong>（<code>ns_create</code>，非 <code>ns_pro_create</code>）。</li><li>运行期开关：<strong>不做</strong>，STAT 观测 + 重新烧录回退。</li><li>CPU 通过线：AEC+NS 合计 <strong>avg ≤ 45% / peak ≤ 60%</strong>，且 50 pkt/s 丢包 0。当前 avg 41.4% 达标，peak 口径待补。</li></ul></section>
+</main>
+</body>
+</html>

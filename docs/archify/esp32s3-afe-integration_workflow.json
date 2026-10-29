@@ -1,0 +1,60 @@
+{
+  "schema": "archify-workflow-v3",
+  "name": "esp32s3-afe-integration",
+  "title": "设备端改用 ESP-SR AFE：AEC + 降噪 + VAD + AGC 一体化",
+  "status": "failed-2026-10-29",
+  "status_note": "在本机（esp-sr 2.4.7 + IDF 5.3.1 + ESP32-S3）上 esp_afe_sr 的 fetch 恒定 ret=-1，输出侧拿不到数据。依次排除：AFE_TYPE_FD 与 AFE_TYPE_VC 结果相同；afe_config_check 无改善；se 任务优先级 5→9（高于采集的 7）无改善；ringbuf 3→5 无改善；库自报 af_chunk=512/512 @16000 Hz、2 通道，与 feed 的块参数一致。前 5 块能出数据，之后永久超时。已按事先声明的回退方案改用独立 esp_vad（见 docs/archify/esp32s3-device-vad_workflow.html）。",
+  "source": "managed_components/espressif__esp-sr 2.4.7（include/esp32s3/esp_afe_sr_iface.h、esp_afe_config.h、esp_afe_sr_models.h）；tarot-esp32/main/audio_transmitter.cc、audio_speaker.cc、audio_aec.cc、audio_ns.cc；mic-desktop/micapp/udp_receiver.py、vad.py",
+  "nodes": [
+    { "id": "capture", "type": "system", "label": "采集任务：I2S 320 采样 / 20 ms 一帧" },
+    { "id": "ref", "type": "process", "label": "参考信号：tx_write 环形缓冲里的播放回采" },
+    { "id": "feed", "type": "process", "label": "AFE feed：mic+ref 交错，get_feed_chunksize（512 采样 / 32 ms）" },
+    { "id": "fetch", "type": "process", "label": "AFE fetch：增强音频 + vad_state + data_volume" },
+    { "id": "reblock", "type": "process", "label": "512→320 重分块，恢复 20 ms 上行节奏（复用现有逻辑）" },
+    { "id": "uplink", "type": "system", "label": "上行帧：flags bit1 = 带 VAD 结论，bit0 = 语音；包头长度不变" },
+    { "id": "pcvad", "type": "process", "label": "PC 端切句：优先用 VAD 位，无标记时回退自适应能量阈值" },
+    { "id": "run", "type": "system", "label": "正常链路：转写 → 气泡 → 落盘 / 自动回读（不变）" }
+  ],
+  "edges": [
+    { "from": "capture", "to": "feed", "label": "每帧麦克风样本" },
+    { "from": "ref", "to": "feed", "label": "同一时刻的播放参考，欠载填 0" },
+    { "from": "feed", "to": "fetch", "label": "AFE 内部 se 任务 + ringbuf" },
+    { "from": "fetch", "to": "reblock", "label": "单通道增强音频" },
+    { "from": "reblock", "to": "uplink", "label": "20 ms 一帧，VAD 位取自 vad_state" },
+    { "from": "uplink", "to": "pcvad", "label": "UDP 5000" },
+    { "from": "pcvad", "to": "run", "label": "切出的句子" },
+    { "from": "fetch", "to": "run", "label": "STAT 回包报 afe/vad 状态，供验收" }
+  ],
+  "failure_exits": [
+    { "from": "feed", "condition": "AFE 初始化失败（模型缺失、PSRAM 不足、afe_config_init 返回 NULL）", "to": "自动回退到现有 audio_aec + audio_ns 链路，STAT 报 afe=off，上行照常" },
+    { "from": "feed", "condition": "AFE 的 CPU 超过 45% 平均线", "to": "按 关 AGC → 关 NS → AFE_MODE_LOW_COST 的顺序降档；仍超则整条回退并如实报告数字" },
+    { "from": "ref", "condition": "没人播放，参考环形缓冲为空", "to": "按静音填 0 每帧送入；AEC 无参考时等价直通" },
+    { "from": "fetch", "condition": "fetch 超时或返回错误", "to": "该帧用上一帧样本补，不阻塞上行；连续 10 帧失败则停 AFE 回退手工链路" },
+    { "from": "pcvad", "condition": "老固件（flags 恒 0）或新固件配老 PC 端", "to": "老固件 bit1 为 0 → PC 端走能量阈值兜底（不能把『没有结论』当成『判为静音』）；老 PC 端忽略 flags，行为不变" },
+    { "from": "fetch", "condition": "播放声被 VAD 误判成人声（全双工）", "to": "AFE 自带 vad_mute_playback 开关，实测确认是否打开；PC 端能量阈值保留作交叉校验" }
+  ],
+  "constraints": {
+    "scope": "新增 main/audio_afe.cc/.h；改 audio_transmitter.cc 的采集与 fetch 接线、audio_speaker.cc 的 STAT、CMakeLists；PC 端 udp_receiver 解析 VAD 位、vad.py 支持 hint",
+    "keep_legacy": "手工 audio_aec.cc / audio_ns.cc 一行不删——既是回退路径也是对照基线",
+    "afe_config": "afe_type=AFE_TYPE_FD、afe_mode=AFE_MODE_LOW_COST、se_init=false（单麦）、wakenet_init=false、aec_init/ns_init/vad_init/agc_init 按需开",
+    "protocol": "包头 20 字节不变，只占用 flags 里原本恒 0 的位：bit1=带设备端 VAD 结论，bit0=该结论为语音。两位缺一不可——只给 bit0 会让「老固件」和「判为静音」无法区分",
+    "out_of_scope": "唤醒词、离线命令词、多麦阵列、AGC 之外的增益策略"
+  },
+  "decisions_pending": [
+    { "question": "AGC 开不开", "leaning": "开——小声说话被抬起来比压低阈值干净；且 VAD 位不依赖能量，AGC 抬升底噪不影响切句" },
+    { "question": "上行要不要带 data_volume", "leaning": "不带——要改包头；需要时从 STAT 读" },
+    { "question": "AFE 任务放哪个核", "leaning": "core 0（Wi-Fi 在 core 0，采集在 core 1，避免和采集抢）" }
+  ],
+  "verification": [
+    "待实现：上行 50 pkt/s 零丢包；STAT 报 afe=on se=off aec=on ns=on vad=on agc=on",
+    "待实现：CPU 平均 ≤45%、峰值 ≤60%（与现有口径一致）",
+    "待实现：2–3 米说话时 flags bit0 稳定置位，静默时不置位",
+    "待实现：PC 端在 VAD 位存在时不再依赖能量阈值",
+    "待实现：故意让 AFE 初始化失败，确认自动退回手工链路且上行不断"
+  ],
+  "references": [
+    "docs/archify/esp32s3-device-aec_workflow.html",
+    "docs/archify/esp32s3-device-ns_workflow.html",
+    "docs/archify/mic-desktop-adaptive-vad_workflow.html"
+  ]
+}

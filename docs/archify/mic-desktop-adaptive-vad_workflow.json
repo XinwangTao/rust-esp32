@@ -1,0 +1,68 @@
+{
+  "schema": "archify-workflow-v3",
+  "name": "mic-desktop-adaptive-vad",
+  "title": "PC 端按环境底噪自适应 VAD 阈值 + 设备端降噪运行期旁路",
+  "status": "implemented-2026-10-29",
+  "source": "mic-desktop/micapp/vad.py(VADSlicer.feed)、micapp/config.py(DEFAULTS.vad)、micapp/ui.py(_on_level)、main.py(VADSlicer 装配)；tarot-esp32/main/audio_speaker.cc(下行帧分发)、main/audio_ns.cc",
+  "nodes": [
+    { "id": "frame", "type": "system", "label": "上行音频帧 AUD0：320 采样 / 20 ms" },
+    { "id": "rms", "type": "process", "label": "逐帧算 RMS（_rms，原有不改）" },
+    { "id": "baseline", "type": "process", "label": "底噪基线：最近 500 帧取 P20，只更新非语音帧" },
+    { "id": "threshold", "type": "process", "label": "阈值 = clamp(底噪×3, 50, 1200)，再对阈值本身做 τ≈4 s 平滑；首次估出底噪直接到位" },
+    { "id": "vad", "type": "process", "label": "VAD 判定 rms >= 阈值；start_ms / hangover_ms 不变" },
+    { "id": "run", "type": "system", "label": "正常链路：切句 → 转写 → 气泡 → 落盘" },
+    { "id": "ui", "type": "process", "label": "界面回显底噪与当前阈值，电平条按动态阈值归一" },
+    { "id": "ab", "type": "manual", "label": "降噪 A/B 开关：下行 NS:on|off 切换设备端降噪" }
+  ],
+  "edges": [
+    { "from": "frame", "to": "rms", "label": "每 20 ms 一帧" },
+    { "from": "rms", "to": "baseline", "label": "rms < 当前阈值时才进窗口" },
+    { "from": "baseline", "to": "threshold", "label": "底噪 × 3 后夹到 [50, 1200]" },
+    { "from": "threshold", "to": "vad", "label": "平滑后的动态阈值" },
+    { "from": "vad", "to": "run", "label": "判定为语音，走原有切句链路" },
+    { "from": "threshold", "to": "ui", "label": "阈值与底噪实时显示" },
+    { "from": "rms", "to": "ui", "label": "电平条按当前阈值归一化" },
+    { "from": "ab", "to": "ui", "label": "切换后用 STAT 回包刷新 ns=on|off 显示" }
+  ],
+  "failure_exits": [
+    { "from": "baseline", "condition": "启动时用户就开始说话，窗口被语音污染", "to": "只采信非语音帧；窗口未满（约 0.5 s）沿用 350 保守值，第一句话仍按老阈值判" },
+    { "from": "threshold", "condition": "持续大声噪声，底噪接近语音电平", "to": "上限 1200 封死，阈值不会涨到永远够不着；界面显示底噪数值供人工判断" },
+    { "from": "baseline", "condition": "绝对静音，底噪接近 0", "to": "下限 50 兜住，避免把任何轻微声响送云端转写" },
+    { "from": "threshold", "condition": "自适应反而把噪声判成语音、转写出垃圾", "to": "config.json 里 vad.adaptive=false 一键退回固定 350，无需改代码重打包" },
+    { "from": "ab", "condition": "老固件不认 NS:on|off 控制帧", "to": "只记日志，不影响 VAD、转写、回读任何主链路" },
+    { "from": "baseline", "condition": "环境底噪本身就高于初始阈值 350，所有帧都被判成语音帧而拒绝入窗（实现期发现的死锁）", "to": "前 25 帧（0.5 s）无条件采样完成冷启动；之后每 max_stale（2 s）强采一帧兜底，限速保证 10 s 窗口内最多 5 帧污染，P20 不受影响" }
+  ],
+  "constraints": {
+    "scope": "micapp/vad.py 估计器 + config 新增 vad.adaptive/ratio/floor/cap + ui 显示底噪阈值与 A/B 开关 + main.py 接线；固件只加 NS:on|off 与 audio_ns_set_enabled()",
+    "untouched": "start_ms / hangover_ms / 切句长度 / 转写落盘 / 自动回读全部不动",
+    "fallback": "固定阈值 350 保留为默认回退路径，vad.adaptive=false 即恢复原行为",
+    "ns_default_on": "设备端降噪默认常开，不随底噪自动关；A/B 开关只供人工验证",
+    "out_of_scope": "按频段判语音、AGC 自动增益、设备端自适应降噪、个性化阈值训练",
+    "distribution": "底噪取低分位 P20 而非均值，因为语音帧占少数，均值会被抬高"
+  },
+  "decisions": [
+    { "question": "自适应阈值做在哪一层", "answer": "只做 PC 端 VAD；设备端 NS 不动，另加运行期开关做 A/B" },
+    { "question": "阈值相对底噪的倍数", "answer": "3 倍（约 +9.5 dB），可在 config 调整" },
+    { "question": "设备端 NS 要不要加运行期开关", "answer": "加，下行控制帧 NS:on|off，用于一次性判定语音是否被 NS 压制" },
+    { "question": "上下限", "answer": "下限 50 / 上限 1200。下限原定 120，2026-10-29 实测后下调：本机底噪 p50≈22/p90≈30，用户语音整句 RMS 只有 110–125，120 会把阈值压在语音线上" },
+    { "question": "窗口与统计量", "answer": "最近 500 帧（10 s）取 P20；底噪平滑 α=0.2，阈值自身再平滑 α=0.005（50 Hz 下 τ≈4 s），首次估出底噪时直接跳到位" }
+  ],
+  "verification": [
+    "离线回归 18 项全 PASS（F:\\cache\\adaptive_vad_test.py）：冷启动沿用固定值 / 安静房底噪 25→阈值落地板 / 小声 RMS150 能切句 / 同条件自适应关闭则漏句 / 嘈杂底噪 500→阈值封顶 1200 / 连说 500 帧基线不涨 / 绝对静音阈值不低于下限 / 自适应关闭恒为固定值 / on_level 三元组 / P20 不被 20% 大值拉走 / 底噪毛刺下 5 s span=1 / 底噪 18→25 漂移下 5 s span=3.6",
+    "抖动两轮：先加死区不够（真机阈值仍 55~76 飘）；根因是底噪平滑 α=0.2 在 50 Hz 下 τ 只有 0.1 s。改为对阈值自身做 τ≈4 s 平滑，模拟同样漂移 span 从 21 降到 3.6。试过语音段内冻结阈值，会把「噪声高于阈值则永远 active」的死锁引回来，已撤回",
+    "实现期修复死锁：底噪高于初始阈值时估计器自锁，加冷启动无条件采样 + 每 2 s 强采一帧",
+    "待实测：真人对 2–3 米说话能否被切句",
+    "已完成 A/B 双向验证：NS:off 后 STAT ns=off 且 ns_frames 冻结 4122；NS:on 后 ns_frames 4164→4286（+122/1.2s ≈ 50 包/s × 2 子帧）",
+    "真机：烧录后上行 48–51 pkt/s；启动日志 vad adaptive=True ratio=3.0 floor=50 cap=1200 fixed=170；界面丢包 0、模式 全双工",
+    "真机实测（每 5 s 诊断日志）：环境 p10 17 / p50 22 / p90 30 / max 99；用户语音整句 RMS 110~125（阈值 120 时擦线通过，转写记录 14:19:06、14:19:14）；据此把 floor 120→50",
+    "未验证：关掉降噪后底噪读数是否如预期上跳（需真实环境噪声）"
+  ],
+  "known_limits": [
+    "上限是常数：环境噪声本身超过语音电平时，封顶后仍可能漏句——那时该处理降噪而不是阈值",
+    "P20 假设说话帧占比 < 80%；连续朗读时基线可能被拉高"
+  ],
+  "references": [
+    "docs/archify/esp32s3-device-ns_workflow.html",
+    "docs/archify/mic-desktop-auto-readback_workflow.html"
+  ]
+}

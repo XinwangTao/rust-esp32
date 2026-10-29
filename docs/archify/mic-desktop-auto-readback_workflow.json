@@ -1,0 +1,130 @@
+{
+  "schema": "archify-workflow-v3",
+  "name": "mic-desktop-auto-readback",
+  "title": "PC 端自动回读：转写出一句就自动念出来",
+  "status": "implemented-2026-10-29",
+  "source": "mic-desktop/main.py(engine.on_result)、micapp/tts.py(Speaker.speak)、micapp/config.py(DEFAULTS)；固件与 UDP 协议不变",
+  "nodes": [
+    {
+      "id": "result",
+      "type": "system",
+      "label": "转写结果 engine.on_result(text, idx)"
+    },
+    {
+      "id": "filter",
+      "type": "process",
+      "label": "闸门：最短长度 + 与最近 5 条已念文本去重"
+    },
+    {
+      "id": "brake",
+      "type": "process",
+      "label": "循环刹车：连续 3 次且间隔 < 2 s 则暂停"
+    },
+    {
+      "id": "speak",
+      "type": "process",
+      "label": "TTS 合成 + UDP 5001 下发（Speaker.speak）"
+    },
+    {
+      "id": "ui",
+      "type": "process",
+      "label": "状态回显：已回读 / 跳过原因 / 刹车提示"
+    },
+    {
+      "id": "run",
+      "type": "system",
+      "label": "正常链路：界面气泡 + 转写落盘（原有，不改）"
+    }
+  ],
+  "edges": [
+    {
+      "from": "result",
+      "to": "filter",
+      "label": "auto_speak 已开启"
+    },
+    {
+      "from": "filter",
+      "to": "brake",
+      "label": "长度足够且未念过"
+    },
+    {
+      "from": "brake",
+      "to": "speak",
+      "label": "未触发刹车"
+    },
+    {
+      "from": "speak",
+      "to": "ui",
+      "label": "下发成功/失败"
+    },
+    {
+      "from": "result",
+      "to": "run",
+      "label": "落盘与气泡照旧，与回读无关"
+    },
+    {
+      "from": "result",
+      "to": "ui",
+      "label": "被闸门跳过时回显原因"
+    }
+  ],
+  "failure_exits": [
+    {
+      "from": "speak",
+      "condition": "板子不在线（没有可用 IP）",
+      "to": "跳过本句并提示「未回读：板子不在线」，不影响转写与落盘"
+    },
+    {
+      "from": "brake",
+      "condition": "自激循环：念出去又被转写回来",
+      "to": "文本去重先挡；连续触发则刹车暂停并提示，需手动恢复或关掉 auto_speak"
+    },
+    {
+      "from": "speak",
+      "condition": "SAPI 合成失败",
+      "to": "跳过这一句只记日志，不重试，不影响下一条"
+    },
+    {
+      "from": "filter",
+      "condition": "噪声误转写被当成一句话",
+      "to": "少于 2 个有效字符不回读；仍频繁则关掉 auto_speak 或先上设备端降噪"
+    },
+    {
+      "from": "result",
+      "condition": "半双工（板子没 AEC）时用户在朗读中说话",
+      "to": "既有行为：朗读期间麦克风被 MicGate 静音，说话不会被转写；界面已有「模式 半双工」提示"
+    }
+  ],
+  "constraints": {
+    "scope": "main.py 的 on_result 接一条回读支路 + 新增 micapp/readback.py + config 加 auto_speak；固件与 UDP 协议零改动",
+    "default_off": "auto_speak 默认 false，必须人工打开",
+    "manual_untouched": "手动「朗读」按钮、转写气泡、转写落盘全部保持原样",
+    "single_trigger": "只挂在 STT 出结果这一个触发源上，不做「检测到说话即回读」",
+    "queue": "正在播报时最多排 1 条，超出丢最新的，不打断当前播放",
+    "out_of_scope": "变声/多音色、按句长截断、语速情绪调节、回读历史记录"
+  },
+  "references": [
+    "docs/archify/esp32s3-mic-gate-handshake_workflow.html",
+    "docs/archify/esp32s3-device-aec_workflow.html"
+  ],
+  "decisions": [
+    {
+      "question": "默认开还是默认关",
+      "answer": "代码默认关（auto_speak=false）；dist/config.json 里已显式打开"
+    },
+    {
+      "question": "朗读中来了新句子",
+      "answer": "排队最多 1 条，超出丢最新的"
+    },
+    {
+      "question": "刹车阈值",
+      "answer": "连续 3 次且间隔 < 2 s 暂停，实测再调"
+    }
+  ],
+  "verification": [
+    "micapp/readback.py 闸门回归 18 项全 PASS（开关/太短/去重/无 IP/排队/续播/刹车/间隔够大不刹车）",
+    "实机接线验证：13:48:31 转写结果「2」被闸门判为 too_short 跳过，日志 readback skip (too_short)",
+    "EXE 重打并启动，界面 全双工 / 48.4 pkt/s / 丢包 0",
+    "未验证：真说话触发「念出来」的完整链路（需人对着板子说话）"
+  ]
+}

@@ -28,10 +28,23 @@ esptool 读芯片特征时报告：`Chip is ESP32-S3 (QFN56) (revision v0.2)` /
 `Features: WiFi, BLE, Embedded PSRAM 8MB (AP_3v3)` / 16MB Flash
 —— 即 **封装内 8MB PSRAM 是真实存在的**（对应 WROOM-1-N16R8 级别模组）。
 
-但当前固件 `sdkconfig.audio-s3` 里**没有开 `CONFIG_SPIRAM`**，所以 PSRAM 一直闲置。
+2026-10-29 已在 `sdkconfig.audio-s3` 里开启 PSRAM（`CONFIG_SPIRAM` / 八线 `SPIRAM_MODE_OCT`
+/ 80 MHz / `SPIRAM_USE_MALLOC` / `SPIRAM_MEMTEST=y`），固件启动即初始化。
+
+实测（向 `板子IP:5001` 发 `STAT` 控制帧读回，2026-10-29）：
+
+```
+STAT heap=8598988 psram_free=8384704 psram_total=8388608 learned=yes target=192.168.237.7:5000
+```
+
+`psram_total=8388608` 即 8 MB 全部识别；`psram_free` 只少 3904 B（运行时自身开销），
+说明目前还没有大块从 PSRAM 分配——这符合预期，esp-sr 的 AEC 尚未接入。
 这一点直接影响设备端回声消除的可行性：esp-sr 的 AEC 需要 64–126 KB PSRAM
-（官方资源表，ESP32-P4 @240MHz 实测），开 PSRAM 后才有条件上。
+（官方资源表，ESP32-P4 @240MHz 实测），现在条件已具备。
 详见 `docs/research/2026-10-29-audio-pipeline-research.md`。
+
+PSRAM 占用 GPIO26(CS)/GPIO30(CLK) 与 33–37，与麦克风 4/5/6、扬声器 15/16/7 均不冲突。
+`main` 组件需要 `PRIV_REQUIRES esp_psram` 才能 `#include "esp_psram.h"`。
 
 ## 串口与复位（2026-10-29 实测）
 
@@ -79,6 +92,10 @@ I2S1 做主控发送，16 kHz / 16-bit / mono，默认引脚 `GPIO15(BCLK)/16(LR
 - **`TONE` 控制帧**：向 `板子IP:5001` 发 4 字节 `TONE`，重播自检音（无需重启）。
 - **`PIN:b,w,d` 控制帧**：运行时改 I2S TX 引脚并立即重播自检音，用于接线排查（已用它确定 DIN 在 GPIO7）。
 - **下行音频**：向 `板子IP:5001` 发与上行同格式的 `AUD0` 帧，payload 为 s16le mono，板子直接写 I2S 播放。
+- **`STAT` 控制帧**：向 `板子IP:5001` 发 4 字节 `STAT`，回包一行
+  `STAT heap=<内部堆> psram_free=<PSRAM 空闲> psram_total=<PSRAM 总量> learned=<yes|no> target=<当前上行目标IP:端口>`。
+  用来在**不接串口**的情况下验收内存与上行目标，PC 侧探针见 `F:\cache\stat_probe.py`。
+  板子 IP 不知道时可以广播 `255.255.255.255:5001`，回包来源就是板子地址。
 
 已验证（2026-10-28，咪头回采）：自检音两段频率在 880/1320 Hz 各命中 8/7 帧；PC 推 2 s 1 kHz 正弦，回采命中 95 帧（能量 >3000）。扬声器初始化失败只告警，不影响上行采集。
 
@@ -101,6 +118,65 @@ python tools/tts_play.py --ip <board-ip> --text "hello" --voice "Microsoft Zira 
 已验证（2026-10-28）：合成「你好，我是这块板子的扬声器。」3.90 s，194 帧实时推送，
 咪头回采静音基线 RMS 108、峰值 448、21 帧越过 2 倍基线阈值，判定 PASS。
 语音能量天然低于满幅正弦，验证阈值按「播放前基线 ×2」动态取，不要用固定 600。
+
+## 上行目标自学习（2026-10-29 实测）
+
+上行目标不再只认编译期的 `AUDIO_UDP_TARGET`：**任何**到达 UDP 5001 的下行包，其来源 IP 会成为新的上行目标
+（只换 IP，端口仍用编译期端口；不写 NVS，重启回到编译期目标）。实现在 `components/tarot_core/src/lib.rs`
+的 `LEARNED_TARGET_IP` 原子量 + `main/audio_speaker.cc` 下行任务里的 `rust_udp_set_target_ip()`。
+流程图真源：`docs/archify/esp32s3-inmp441-uplink-target_workflow.html`。
+
+改动 `AUDIO_WIFI_SSID`/`AUDIO_WIFI_PASSWORD`/`AUDIO_UDP_TARGET`（或 `audio.env`）会触发 Rust 重编：
+`components/tarot_core/build.rs` 里对这三个变量做了 `cargo:rerun-if-env-changed`，
+`CMakeLists.txt` 再用「audio.env 摘要 + 三个变量」做 stamp 依赖（此前改了环境变量不会重编，容易烧进旧凭据）。
+
+实测（2026-10-29，故意烧 `AUDIO_UDP_TARGET=192.168.237.250:5000` 假目标）：
+
+| 阶段 | 结果 |
+|------|------|
+| 收到任何下行包之前 | `0 pkt/s`（上行确实发往假目标，PC 收不到） |
+| 发 `STAT` 后 | 回包 `learned=yes target=192.168.237.7:5000` |
+| 学完之后 | `200 包/4s = 50.00 pkt/s`，满包率，来源 `192.168.237.168` |
+
+## 设备端回声消除（esp-sr AEC，2026-10-29 实测）
+
+固件在「I2S0 采集 → 上行」之间插了一层 AEC：把正在送往 I2S1 的播放数据当作参考信号，
+从麦克风信号里减掉扬声器的声音，PC 侧才有条件跑真全双工（`mic_gate: off`）。
+代码在 `main/audio_aec.cc`（新增）+ `audio_transmitter.cc` / `audio_speaker.cc` 各一处钩子，
+流程图真源 `docs/archify/esp32s3-device-aec_workflow.html`。
+
+- **组件版本**：`espressif/esp-sr` 只能用 **2.4.x（实测解析到 2.4.7）**。
+  2.5/2.6 会拉 esp-dl 3.3.x，它用了 IDF 5.4 才有的 `MALLOC_CAP_SIMD`，
+  在本机 IDF 5.3.1 上编译报 `'MALLOC_CAP_SIMD' was not declared`。已在 `main/idf_component.yml` 注释里写明。
+- **API**（以 `managed_components/espressif__esp-sr/include/esp32s3/esp_aec.h` 为准）：
+  `aec_create(sample_rate, filter_length, channel_num, mode)`，`filter_length` 推荐 4；
+  `aec_get_chunksize()` 实测 **512 采样 = 32 ms**；`aec_process(handle, mic, ref, out)` 原地三缓冲；
+  缓冲必须 16 字节对齐（`heap_caps_aligned_alloc`），大块走 PSRAM。
+  档位 `AEC_MODE_FD_LOW_COST` + NLP `AEC_NLP_LEVEL_AGGR`（默认值，代码里显式写出）。
+- **帧长不匹配**：上行是 320 采样/20 ms，AEC 是 512 采样/32 ms，`audio_aec.cc` 里做双向重分块
+  （8×320 拼 5×512），输出环欠载时补零，因此**开头固定多 32 ms 延迟**。
+- **参考信号**：`tx_write()` 在写 I2S 之前把 PCM 灌进 ref 环形缓冲（8192 采样 = 512 ms，
+  2 的幂用掩码取模）。没有播放时 ref 欠载 → 喂静音 → AEC 近似直通。
+- **内存实测**（`STAT` 回包）：`psram_free` 从 8 384 704 降到 8 254 252，共吃约 **134 KB PSRAM**
+  （AEC 内部约 107 KB + 我们自己的 27 KB 缓冲）；`inner_free=223 963`（约 219 KB 内部 RAM 剩余）。
+  固件 1 099 328 → **1 173 184 字节**（+74 KB，只链接 AEC 相关目标文件），factory 分区 4 MB 仍宽裕。
+
+`STAT` 回包新增字段：`inner_free` / `aec=on|off` / `frame` / `blocks` / `ref_uf`（ref 欠载次数）/
+`ref_of`（漂移后重对齐次数）。
+
+验收（2026-10-29，`tools/tts_play.py` 播 7.82 s 中文长句，PC 侧同时抓上行）：
+
+| 指标 | 改造前（无 AEC） | 改造后（AEC） |
+|---|---|---|
+| 回采峰值 RMS | 669（另有 448 峰值） | 418（单帧瞬态），播放期平均 **97** |
+| 环境底噪 RMS | 99–108 | 104 |
+| 越过 2 倍基线阈值帧数 | 21 帧 | 0–2 帧（只在每句开头 300 ms） |
+
+证明「声音确实播出去了」而不是「没声所以没回声」：两次 `STAT` 之间 `blocks +372`、`ref_uf +128`，
+即有 **244 个块拿到了参考信号**，正好等于 7.82 s × 31.25 块/s。
+
+**已知残留**：每句话开头约 300 ms AEC 还在收敛，会有 1–2 帧冲到 156–171（偶发 418），
+下游 VAD 阈值在 170 附近时可能被触发；如果真出现重复转写，把 `mic_gate` 切回 `"auto"` 即可退回半双工。
 
 ## Constraints
 

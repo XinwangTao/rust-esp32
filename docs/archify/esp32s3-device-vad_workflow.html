@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>设备端加 esp_vad：AEC → NS → VAD，逐帧结论随上行包送到 PC</title>
+<style>
+:root{color-scheme:light;--ink:#18212b;--muted:#607080;--line:#b8c5cf;--surface:#f5f7f8;--system:#d9ecf4;--process:#e4eee1;--manual:#f7e7c9;--fail:#f3d7d2}
+*{box-sizing:border-box}body{margin:0;background:#fff;color:var(--ink);font:15px/1.5 system-ui,"Microsoft YaHei",sans-serif}main{max-width:1240px;margin:0 auto;padding:28px 24px 44px}h1{font-size:28px;margin:0 0 6px}p{margin:4px 0;color:var(--muted)}.meta{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0 22px}.tag{border:1px solid var(--line);padding:4px 9px;border-radius:4px;background:var(--surface);font-size:13px}.legend{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0 18px;color:var(--muted);font-size:13px}.legend span:before{content:"";display:inline-block;width:12px;height:12px;margin-right:5px;vertical-align:-2px;border:1px solid var(--line)}.l-system:before{background:var(--system)}.l-process:before{background:var(--process)}.l-manual:before{background:var(--manual)}.l-fail:before{background:var(--fail)}.flow{border:1px solid var(--line);background:var(--surface);padding:22px;overflow:auto}.row{display:grid;grid-template-columns:repeat(6,minmax(140px,1fr));gap:26px;min-width:1060px;align-items:center}.node{min-height:92px;border:1px solid var(--line);border-radius:5px;padding:11px 10px;display:flex;align-items:center;justify-content:center;text-align:center;font-weight:650;position:relative}.system{background:var(--system)}.process{background:var(--process)}.manual{background:var(--manual)}.arrow{position:absolute;right:-27px;top:50%;width:26px;border-top:2px solid #71808c}.arrow:after{content:"";position:absolute;right:-1px;top:-5px;border-left:7px solid #71808c;border-top:5px solid transparent;border-bottom:5px solid transparent}.branch{margin-top:16px;display:grid;grid-template-columns:minmax(140px,1fr) minmax(140px,1fr) 2fr;gap:26px;min-width:1060px;align-items:center}.branch .note{border:1px dashed #71808c;border-radius:5px;padding:10px 12px;color:var(--muted);font-size:13px;background:#fff}.loop{margin-top:14px;border:1px dashed #71808c;border-radius:5px;padding:10px 12px;color:var(--muted);font-size:13px;background:#fff}.failures{margin-top:22px;display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.failure{background:var(--fail);border:1px solid #c9958b;border-radius:5px;padding:12px;font-size:14px}.failure strong{display:block;margin-bottom:4px}.section{margin-top:24px;border-top:1px solid var(--line);padding-top:16px}ul{margin:8px 0;padding-left:20px}code{background:#eef1f3;padding:1px 4px;border-radius:3px}@media(max-width:700px){main{padding:22px 14px}h1{font-size:23px}.failures{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<h1>设备端加 esp_vad：AEC → NS → VAD，逐帧结论随上行包送到 PC</h1>
+<p>Archify workflow · 状态：<strong>已实现（2026-10-29）</strong> · 目的：让“这一帧是不是人声”由板子在 <b>AEC + 降噪之后</b>判，而不是让 PC 拿 RMS 去猜；PC 端那套自适应能量阈值退回兜底</p>
+<div class="meta"><span class="tag">L1 新增判定源</span><span class="tag">复用已验证的 AEC/NS</span><span class="tag">包头只占 flags 两位</span><span class="tag">能量阈值保留兜底</span><span class="tag">AFE 方案失败后的回退</span></div>
+<div class="legend"><span class="l-system">系统/验收</span><span class="l-process">处理</span><span class="l-manual">人工/外部触发</span><span class="l-fail">失败/兜底出口</span></div>
+<section class="flow" aria-label="设备端 VAD 主流程">
+<div class="row">
+<div class="node system">采集任务<br>I2S 320 采样<br>20 ms 一帧<span class="arrow"></span></div>
+<div class="node process">AEC<br><code>aec_process</code><br>512 采样 / 32 ms<span class="arrow"></span></div>
+<div class="node process">NS<br><code>ns_process</code><br>拆两个 160 子帧<span class="arrow"></span></div>
+<div class="node process">esp_vad<br><code>vad_process</code><br>VAD_MODE_1 / 20 ms<span class="arrow"></span></div>
+<div class="node process">上行 flags<br>bit1=有结论<br>bit0=判为语音<span class="arrow"></span></div>
+<div class="node system">PC 切句<br>有 bit1 用 VAD<br>否则回退能量阈值</div>
+</div>
+<div class="branch">
+<div class="node process">正常链路<br>转写 → 气泡 → 落盘<br>→ 自动回读</div>
+<div class="node manual">STAT 回包<br><code>vad=on</code><br><code>vad_frames/vad_speech</code></div>
+<div class="note"><b>为什么 VAD 放在 NS 之后</b>：它看到的是降过噪的信号，信噪比比原始麦克风好；而 AEC 必须拿原始 mic 和播放参考做自适应，所以 AEC 只能在最前面。顺序固定为 <b>AEC → NS → VAD</b>。<br><b>为什么不用 AFE 一体化</b>：<code>esp_afe_sr</code> 在本机 fetch 恒定 <code>ret=-1</code>，换类型、调优先级、过 config_check、改 ringbuf 都无效，详见 <code>esp32s3-afe-integration_workflow.html</code> 的失败记录。这里退回独立 API，AEC/NS 的参数一行没动，风险最小。<br><b>两位 flags 是必须的</b>：只给 bit0 的话，「老固件」和「VAD 判为静音」都是 0，PC 端会把老固件永远当成静音、一句都切不出来。</div>
+</div>
+<div class="loop">闭环：<code>AEC → NS → VAD → flags → PC 切句 → 转写 → 回读 → 被麦克风收回</code>。回读那一环靠设备端 AEC 压掉（实测播放期间上行平均 RMS 97，底噪 104），再叠加 PC 端的文本去重与刹车。</div>
+<div class="failures">
+<div class="failure"><strong>vad_create 失败</strong>VAD 起不来：上行 <code>flags</code> 恒 0，PC 端 <code>hint=None</code> 自动走能量阈值——就是今天之前的行为，不会变差。</div>
+<div class="failure"><strong>播放声被判成人声</strong>全双工时板子自己的声音可能触发 VAD：文本去重 + 连续 3 次刹车兜底；仍频繁就切回半双工（<code>mic_gate=on</code>）让朗读期间静音。</div>
+<div class="failure"><strong>稳态噪声被判成人声</strong>风扇/空调持续起句：<code>VAD_MODE_1</code> 已偏激进，仍误判就提到 <code>VAD_MODE_2</code> 或 <code>VAD_MODE_3</code>（改一行常量）。</div>
+<div class="failure"><strong>老固件 / 老 PC 端混用</strong>老固件 flags 恒 0 → bit1 为 0 → PC 走能量阈值；新固件配老 PC 端 → 老代码不读 flags，行为不变。</div>
+<div class="failure"><strong>VAD 切点与 20 ms 帧边界</strong>VAD 原生支持 10/20/30 ms，这里每帧正好 20 ms，不需要重分块，也不增加延迟。</div>
+</div>
+</section>
+<section class="section"><strong>边界与约束</strong><ul><li>改动：新增 <code>main/audio_vad.cc/.h</code>；<code>audio_transmitter.cc</code> 在 NS 之后调 VAD 并写 flags；<code>audio_speaker.cc</code> 的 STAT 换成 <code>vad=</code> 字段；<code>components/tarot_core/src/lib.rs</code> 的包头加 <code>flags</code> 形参。</li><li>AEC / NS 的实现与参数<b>一行未动</b>，VAD 只是追加在最后。</li><li>包头 20 字节不变，只占用原本恒 0 的 flags 位。</li><li>不做：AFE 的 AGC、唤醒词、多麦阵列、设备端切句（切句仍在 PC 端做）。</li></ul></section>
+<section class="section"><strong>验收结果（2026-10-29）</strong><ul>
+<li>上行 <b>50 pkt/s</b> 稳定（连续 20 秒每秒 49~51），<b>1000/1000 包都带 VAD 结论</b>，其中 153 帧判为语音。</li>
+<li>STAT：<code>aec=on ns=on vad=on</code>，<code>vad_frames</code> 持续增长，<code>vad_speech=317</code>；<code>inner_free</code> 181 KB → <b>222 KB</b>（AFE 卸载后回补）。</li>
+<li>PC 端 <code>hint</code> 随说话增长：<code>41/734 → 117/1236 → 881/5983</code>，停止说话后冻结不动。</li>
+<li><b>关键证据</b>：切出的句子 <code>utterance rms=42~73</code> 而能量阈值 <code>thr=66~74</code>——正是能量 VAD 切不出来的那批低声句子。</li>
+<li>端到端：说话期间产生新转写（15:07:17、15:07:52），VAD → flags → PC 切句 → STT 全链路通。</li>
+<li>离线回归 21 项全 PASS，含 3 项 hint 路径用例。</li>
+</ul></section>
+<section class="section"><strong>验收标准</strong><ul><li>上行 50 pkt/s、丢包 0，STAT 报 <code>vad=on</code> 且 <code>vad_frames</code> 持续增长。</li><li>静默时 <code>vad_speech / vad_frames</code> 接近 0；说话时明显上升。</li><li>PC 端日志 <code>hint=语音帧/总帧</code> 非零，说明 <code>flags</code> 真的被用上了。</li><li>回退可用：<code>flags</code> 恒 0 时 PC 仍能靠能量阈值切句。</li></ul></section>
+</main>
+</body>
+</html>

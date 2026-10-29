@@ -3,7 +3,8 @@ use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::{ClientConfiguration, Configuration, EspWifi};
 use log::{error, info, warn};
-use std::net::UdpSocket;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -19,6 +20,31 @@ const UDP_TARGET: &str = match option_env!("AUDIO_UDP_TARGET") {
     Some(value) => value,
     None => "192.0.2.1:5000",
 };
+/// 下行包学习到的接收端 IP（原样保存 recvfrom 的 sin_addr，网络字节序）；0 = 还没学到。
+static LEARNED_TARGET_IP: AtomicU32 = AtomicU32::new(0);
+
+/// 编译期上行目标（IP + 端口）；学习到的地址只替换 IP，端口仍用这里的。
+fn default_target() -> SocketAddr {
+    static ADDR: OnceLock<SocketAddr> = OnceLock::new();
+    *ADDR.get_or_init(|| {
+        UDP_TARGET
+            .parse()
+            .unwrap_or_else(|_| SocketAddr::from(([192, 0, 2, 1], 5000)))
+    })
+}
+
+fn target_addr() -> SocketAddr {
+    let raw = LEARNED_TARGET_IP.load(Ordering::Relaxed);
+    if raw == 0 {
+        return default_target();
+    }
+    // raw 是 recvfrom 的 sin_addr（网络字节序原样当 u32），换回主机序的数值即点分四段
+    SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::from(u32::from_be(raw))),
+        default_target().port(),
+    )
+}
+
 const AUDIO_MAGIC: &[u8; 4] = b"AUD0";
 const AUDIO_VERSION: u8 = 1;
 
@@ -92,6 +118,7 @@ pub extern "C" fn rust_udp_send_audio(
     sequence: u32,
     sample_rate: u32,
     sample_count: u16,
+    flags: u8,
 ) {
     if data.is_null() || len > u16::MAX as usize {
         return;
@@ -100,7 +127,8 @@ pub extern "C" fn rust_udp_send_audio(
     let header = AudioHeader {
         magic: *AUDIO_MAGIC,
         version: AUDIO_VERSION,
-        flags: 0,
+        // bit0 = 设备端 AFE 判为语音；老 PC 端忽略该位，行为不变
+        flags,
         header_len: std::mem::size_of::<AudioHeader>() as u16,
         sequence,
         sample_rate,
@@ -120,11 +148,30 @@ pub extern "C" fn rust_udp_send_audio(
         return;
     };
     let Some(socket) = guard.as_ref() else { return };
-    if let Err(error) = socket.send_to(&packet, UDP_TARGET) {
+    if let Err(error) = socket.send_to(&packet, target_addr()) {
         if error.kind() != std::io::ErrorKind::WouldBlock {
             warn!("UDP audio send failed: {error}");
         }
     }
+}
+
+/// C++ 下行任务收到任意下行包时调用，把来源 IP 设为新的上行目标（传 0 表示回到编译期目标）。
+#[no_mangle]
+pub extern "C" fn rust_udp_set_target_ip(ip_be: u32) {
+    let previous = LEARNED_TARGET_IP.swap(ip_be, Ordering::Relaxed);
+    if previous != ip_be {
+        info!("uplink target -> {}", target_addr());
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_udp_target_ip() -> u32 {
+    LEARNED_TARGET_IP.load(Ordering::Relaxed)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_udp_target_port() -> u16 {
+    default_target().port()
 }
 
 #[no_mangle]

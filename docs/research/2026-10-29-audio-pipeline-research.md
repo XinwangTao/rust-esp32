@@ -14,6 +14,14 @@
 
 ---
 
+## 〇、落地结论（2026-10-29）
+
+设备端 AEC 已实机跑通，走 esp-sr 的 **AEC 直调**（不走 AFE），档位 `FD_LOW_COST`。
+踩到并已定档的坑：**esp-sr 只能用 2.4.x**——2.5/2.6 依赖 esp-dl 3.3.x，后者用了 IDF 5.4 的
+`MALLOC_CAP_SIMD`，IDF 5.3.1 编不过（`main/idf_component.yml` 已注释说明）。
+实测帧长 512 采样/32 ms（与官方文档一致），PSRAM 占用约 107 KB，固件 +74 KB。
+详见 `tarot-esp32/hardware-esp32s3-inmp441.md` 的「设备端回声消除」章节。
+
 ## 一、AEC：乐鑫官方的路线
 
 ### 1. esp-sr 的 AEC 接口（已验证）
@@ -127,11 +135,20 @@ afe_data   = afe_handle->create_from_config(cfg);   // 之后 feed / fetch 循�
 | 2 | 一个乱序/重复包让丢包数暴涨 4294967294 | `micapp/udp_receiver.py` | 已换成按播放顺序计数 |
 | 3 | 乱序包直接乱序播放，转写串字 | `micapp/udp_receiver.py` | 3 帧重排缓冲 + 60 ms 超时放行，用例通过 |
 | 4 | 朗读声被麦克风采回，重复转写 | `micapp/gate.py`（新增）+ `main.py` | 朗读期间丢弃 25 帧、恢复后切段正常 |
-| 5 | 固件 160 MHz + -Og | `tarot-esp32/sdkconfig.audio-s3` | 已改 240 MHz + -O2，构建中 |
+| 5 | 固件 160 MHz + -Og | `tarot-esp32/sdkconfig.audio-s3` | 已改 240 MHz + -O2，实机验收通过（60 s 2981 包 / 49.67 pkt/s / 丢包 0.67%） |
+| 6 | 8 MB PSRAM 闲置 | `sdkconfig.audio-s3`（`CONFIG_SPIRAM` 八线 80 MHz） | `STAT` 回包 `psram_total=8388608 psram_free=8384704` |
+| 7 | 上行目标写死，换 PC 网段就要重烧 | `tarot_core/src/lib.rs` + `main/audio_speaker.cc` | 假目标 192.168.237.250 烧录后：收到下行前 0 pkt/s，STAT 后 50.00 pkt/s |
+| 8 | 改 `audio.env` 不触发 Rust 重编（凭据/目标静默不更新） | `tarot_core/build.rs`（新增）+ `tarot_core/CMakeLists.txt` stamp | 换目标后确实重编（本次假目标验证依赖它） |
+| 9 | 朗读声被麦克风采回（此前靠 PC 侧半双工硬挡） | `tarot-esp32/main/audio_aec.cc`（新增）+ 采集/播放各一处钩子 | 播 7.82 s TTS：回采平均 RMS 97（底噪 104），改造前峰值 669；`STAT` 显示 `aec=on frame=512 blocks` 递增 |
 
-## 六、待确认（涉及固件流程，需先改图）
+## 六、后续（需先改图再动流程）
 
-1. **上行目标地址自学习**：设备从 5001 端口收到任意下行包后，把上行目标改成该来源地址；
-   没有下行包时退回编译期 `AUDIO_UDP_TARGET`。
-2. **设备端 AEC**：需先确认板子是否带 PSRAM（`esptool.py flash_id` 或模块丝印）。
-3. **静音不上行**：设备端做能量门控，安静时不发包（省电、省空口），代价是接收端 VAD 需要保活机制。
+1. **设备端 AEC**：已完成并验收（见第〇节与第 9 条），图真源
+   `docs/archify/esp32s3-device-aec_workflow.html`。PC 侧 `mic_gate` 已可切 `off` 跑全双工。
+2. **静音不上行**：设备端做能量门控，安静时不发包（省电、省空口），代价是接收端 VAD 需要保活机制。同为 L1。
+3. **编码**：Opus 需改 AUD0 帧格式（对外契约），非必要不动；真要省带宽先考虑 20 ms→40 ms 聚合。
+
+已落地：
+- **上行目标地址自学习**（原第 1 条）：已按确认后的图实现并实机验证，
+  图真源 `docs/archify/esp32s3-inmp441-uplink-target_workflow.html`。
+  决策：任何来源的下行包都学、只学 IP 不学端口、不写 NVS、不加 `TARGET:reset`。

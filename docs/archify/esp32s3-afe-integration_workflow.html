@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>设备端改用 ESP-SR AFE：AEC + 降噪 + VAD + AGC 一体化</title>
+<style>
+:root{color-scheme:light;--ink:#18212b;--muted:#607080;--line:#b8c5cf;--surface:#f5f7f8;--system:#d9ecf4;--process:#e4eee1;--manual:#f7e7c9;--fail:#f3d7d2}
+*{box-sizing:border-box}body{margin:0;background:#fff;color:var(--ink);font:15px/1.5 system-ui,"Microsoft YaHei",sans-serif}main{max-width:1240px;margin:0 auto;padding:28px 24px 44px}h1{font-size:28px;margin:0 0 6px}p{margin:4px 0;color:var(--muted)}.meta{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0 22px}.tag{border:1px solid var(--line);padding:4px 9px;border-radius:4px;background:var(--surface);font-size:13px}.legend{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0 18px;color:var(--muted);font-size:13px}.legend span:before{content:"";display:inline-block;width:12px;height:12px;margin-right:5px;vertical-align:-2px;border:1px solid var(--line)}.l-system:before{background:var(--system)}.l-process:before{background:var(--process)}.l-manual:before{background:var(--manual)}.l-fail:before{background:var(--fail)}.flow{border:1px solid var(--line);background:var(--surface);padding:22px;overflow:auto}.row{display:grid;grid-template-columns:repeat(6,minmax(140px,1fr));gap:26px;min-width:1060px;align-items:center}.node{min-height:92px;border:1px solid var(--line);border-radius:5px;padding:11px 10px;display:flex;align-items:center;justify-content:center;text-align:center;font-weight:650;position:relative}.system{background:var(--system)}.process{background:var(--process)}.manual{background:var(--manual)}.arrow{position:absolute;right:-27px;top:50%;width:26px;border-top:2px solid #71808c}.arrow:after{content:"";position:absolute;right:-1px;top:-5px;border-left:7px solid #71808c;border-top:5px solid transparent;border-bottom:5px solid transparent}.branch{margin-top:16px;display:grid;grid-template-columns:minmax(140px,1fr) minmax(140px,1fr) 2fr;gap:26px;min-width:1060px;align-items:center}.branch .note{border:1px dashed #71808c;border-radius:5px;padding:10px 12px;color:var(--muted);font-size:13px;background:#fff}.loop{margin-top:14px;border:1px dashed #71808c;border-radius:5px;padding:10px 12px;color:var(--muted);font-size:13px;background:#fff}.failures{margin-top:22px;display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.failure{background:var(--fail);border:1px solid #c9958b;border-radius:5px;padding:12px;font-size:14px}.failure strong{display:block;margin-bottom:4px}.section{margin-top:24px;border-top:1px solid var(--line);padding-top:16px}ul{margin:8px 0;padding-left:20px}code{background:#eef1f3;padding:1px 4px;border-radius:3px}@media(max-width:700px){main{padding:22px 14px}h1{font-size:23px}.failures{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<h1>设备端改用 ESP-SR AFE：AEC + 降噪 + VAD + AGC 一体化</h1>
+<p>Archify workflow · 状态：<strong>未采用（2026-10-29 实测失败）</strong> · 目的：把手写的 <code>aec_create</code>→<code>ns_create</code> 链路换成 esp-sr 的 <code>esp_afe_sr</code>，一次拿到 AEC、非线性降噪、<b>真正的 VAD</b> 和 AGC；VAD 结果随上行包送到 PC，PC 端那套自适应能量阈值降级为兜底</p>
+<div class="meta"><span class="tag">L2 换掉音频前端</span><span class="tag">实测未通过</span><span class="tag">fetch 恒定 ret=-1</span><span class="tag">已改走 esp_vad</span><span class="tag">本图留作失败记录</span></div>
+<section class="section"><strong>失败记录（2026-10-29 实测）</strong><ul>
+<li>现象：固件起来后上行掉到 <b>7 包/秒</b>（应为 50）；STAT 报 <code>afe=on af_blocks=2~5 af_fail=14+ af_ret=-1 af_us_avg≈1.5 s</code>，<code>fetch</code> 每次阻塞到超时。</li>
+<li>已排除：<code>AFE_TYPE_FD</code> 与 <code>AFE_TYPE_VC</code> 结果完全相同；过 <code>afe_config_check()</code> 无改善；se 任务优先级 5→9（高于采集的 7）无改善；<code>afe_ringbuf_size</code> 3→5 无改善；库自报 <code>af_chunk=512/512</code>、<code>af_rate=16000</code>、<code>af_ch=2</code>，与 feed 的块参数一致；<code>feed</code> 不报错。</li>
+<li>特征：前 5 块能拿到数据，之后永久超时。se 任务内部是 <code>sr_rb_read(rb_in, portMAX_DELAY)</code> → <code>sr_rb_write(rb_out, …, 0)</code>，输出侧不再产出。</li>
+<li>处置：按事先声明的回退方案改用独立 <code>esp_vad</code>（见 <code>docs/archify/esp32s3-device-vad_workflow.html</code>）。本图保留为记录，不再作为实现依据。</li>
+</ul></section>
+<div class="legend"><span class="l-system">系统/验收</span><span class="l-process">处理</span><span class="l-manual">人工/外部触发</span><span class="l-fail">失败/兜底出口</span></div>
+<section class="flow" aria-label="AFE 主流程">
+<div class="row">
+<div class="node system">采集任务<br>I2S 320 采样<br>20 ms 一帧<span class="arrow"></span></div>
+<div class="node process">参考信号<br><code>tx_write</code> 环形缓冲<br>播放回采参考<span class="arrow"></span></div>
+<div class="node process">AFE <code>feed</code><br>mic+ref 交错<br>512 采样 / 32 ms<span class="arrow"></span></div>
+<div class="node process">AFE <code>fetch</code><br>增强音频 + <code>vad_state</code><br>+ <code>data_volume</code><span class="arrow"></span></div>
+<div class="node process">512→320 重分块<br>恢复 20 ms 上行节奏<br>（现有逻辑复用）<span class="arrow"></span></div>
+<div class="node system">上行帧<br><code>flags</code> bit1=有VAD结论<br>bit0=语音 · 包头不变</div>
+</div>
+<div class="branch">
+<div class="node process">PC 端切句<br>优先用 VAD 位<br>无标记回退能量阈值</div>
+<div class="node manual">STAT 回包<br><code>afe=on|off</code><br><code>vad=</code> 计数</div>
+<div class="note"><b>为什么换 AFE 而不是继续调阈值</b>：能量 VAD 只看响度，今天实测已经证明它和「是不是人声」不是一回事——底噪在 18~25 之间漂，阈值就得跟着调一整天。AFE 的 VAD 是基于频谱特征的判定，而且它看到的是 <b>AEC 之后、降噪之后</b>的信号，天然比 PC 端拿到的更干净。<br><b>AGC 是额外收获</b>：2–3 米的小声说话被自动抬起来，这比把阈值一再压低更干净——压低阈值是让噪声也进来，抬升语音是让信噪比变好。<br><b>协议向后兼容</b>：包头 20 字节一个字节都不改，只用 <code>flags</code> 里原本恒为 0 的位——<b>bit1 = 本帧带设备端 VAD 结论</b>，<b>bit0 = 该结论是语音</b>。为什么要两位：只给 bit0 的话，「老固件」和「AFE 判为静音」都是 0，PC 端没法区分，会把老固件永远当成静音、一句都切不出来。</div>
+</div>
+<div class="loop">AFE 内部自己开 se 任务和 ringbuf：采集任务只负责 <code>feed</code>，另一个任务取 <code>fetch</code>。时间戳对齐由 AFE 的 ringbuf 负责，我们不再手工维护 320↔512 的参考对齐。</div>
+<div class="failures">
+<div class="failure"><strong>AFE 初始化失败</strong>模型缺失、PSRAM 不够、<code>afe_config_init</code> 返回 NULL：<b>自动回退</b>到现有手工 <code>audio_aec</code>+<code>audio_ns</code> 链路，STAT 报 <code>afe=off</code>，上行照常。</div>
+<div class="failure"><strong>CPU 超过 45% 线</strong>AFE 比手工链路重：实测若平均超线，按 关 AGC → 关 NS → <code>AFE_MODE_LOW_COST</code> 的顺序降档；仍超就整条回退并在交付里写明数字。</div>
+<div class="failure"><strong>参考通道欠载</strong>没人播放时环形缓冲是空的：AFE 仍需每帧参考，按静音填 0 送入；AEC 在无参考时等价于直通。</div>
+<div class="failure"><strong>fetch 超时或返回错误</strong>该帧输出用上一帧的样本补，不阻塞上行；连续失败 10 帧则停 AFE、回退手工链路。</div>
+<div class="failure"><strong>老固件 / 老 PC 端混用</strong>老固件 flags 恒 0 → 新 PC 端走能量阈值；新固件 + 老 PC 端 → 老代码忽略该位，行为不变。</div>
+<div class="failure"><strong>VAD 误判（播放声被判成人声）</strong>全双工时扬声器声音可能触发 VAD：AFE 自带 <code>vad_mute_playback</code> 开关，实测确认是否需要打开；另保留 PC 端能量阈值作交叉校验。</div>
+</div>
+</section>
+<section class="section"><strong>边界与约束</strong><ul><li>改动：<code>main/audio_afe.cc/.h</code>（新增）、<code>audio_transmitter.cc</code>（采集/fetch 接线）、<code>audio_speaker.cc</code>（STAT 加字段）、<code>main/CMakeLists.txt</code>；PC 端 <code>udp_receiver.py</code> 解析 VAD 位、<code>vad.py</code> 支持 hint。</li><li><b>手工 <code>audio_aec.cc</code>/<code>audio_ns.cc</code> 一行不删</b>——既是回退路径，也是对照实验的基线。</li><li><code>se_init = false</code>（单麦，没有阵列）；<code>wakenet_init = false</code>（本轮不做唤醒词）。</li><li><code>afe_type = AFE_TYPE_FD</code>（全双工，含非线性降噪）；<code>afe_mode = AFE_MODE_LOW_COST</code>。</li><li>不做：唤醒词、离线命令词、多麦阵列、设备端 AGC 之外的增益策略。</li></ul></section>
+<section class="section"><strong>待决问题</strong><ul><li>AGC 要不要开？开的话安静处噪声也会被抬起来，可能让 PC 端能量阈值失效——倾向<b>开</b>，因为 VAD 位不再依赖能量。</li><li>上行只带 VAD 位，还是顺带带 <code>data_volume</code>？后者要改包头，倾向<b>不带</b>，需要时从 STAT 看。</li><li>AFE 任务放哪个核？倾向 <b>core 0</b>（Wi-Fi 在 core 0，音频采集在 core 1，避免和采集抢）。</li></ul></section>
+<section class="section"><strong>验收标准</strong><ul><li>AFE 版固件：上行 50 pkt/s 零丢包，STAT 报 <code>afe=on se=off aec=on ns=on vad=on agc=on</code>。</li><li>CPU 平均 ≤45%、峰值 ≤60%（和现在同一口径）。</li><li>2–3 米说话时上行 <code>flags</code> bit0 稳定置位；静默时不置位。</li><li>PC 端在 VAD 位存在时不再依赖能量阈值，阈值读数只作参考。</li><li>回退路径可用：故意让 AFE 初始化失败，确认自动退回手工链路且上行不断。</li></ul></section>
+</main>
+</body>
+</html>

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PC 端自适应 VAD 阈值 + 设备端降噪旁路</title>
+<style>
+:root{color-scheme:light;--ink:#18212b;--muted:#607080;--line:#b8c5cf;--surface:#f5f7f8;--system:#d9ecf4;--process:#e4eee1;--manual:#f7e7c9;--fail:#f3d7d2}
+*{box-sizing:border-box}body{margin:0;background:#fff;color:var(--ink);font:15px/1.5 system-ui,"Microsoft YaHei",sans-serif}main{max-width:1240px;margin:0 auto;padding:28px 24px 44px}h1{font-size:28px;margin:0 0 6px}p{margin:4px 0;color:var(--muted)}.meta{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0 22px}.tag{border:1px solid var(--line);padding:4px 9px;border-radius:4px;background:var(--surface);font-size:13px}.legend{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0 18px;color:var(--muted);font-size:13px}.legend span:before{content:"";display:inline-block;width:12px;height:12px;margin-right:5px;vertical-align:-2px;border:1px solid var(--line)}.l-system:before{background:var(--system)}.l-process:before{background:var(--process)}.l-manual:before{background:var(--manual)}.l-fail:before{background:var(--fail)}.flow{border:1px solid var(--line);background:var(--surface);padding:22px;overflow:auto}.row{display:grid;grid-template-columns:repeat(6,minmax(140px,1fr));gap:26px;min-width:1060px;align-items:center}.node{min-height:92px;border:1px solid var(--line);border-radius:5px;padding:11px 10px;display:flex;align-items:center;justify-content:center;text-align:center;font-weight:650;position:relative}.system{background:var(--system)}.process{background:var(--process)}.manual{background:var(--manual)}.arrow{position:absolute;right:-27px;top:50%;width:26px;border-top:2px solid #71808c}.arrow:after{content:"";position:absolute;right:-1px;top:-5px;border-left:7px solid #71808c;border-top:5px solid transparent;border-bottom:5px solid transparent}.branch{margin-top:16px;display:grid;grid-template-columns:minmax(140px,1fr) minmax(140px,1fr) 2fr;gap:26px;min-width:1060px;align-items:center}.branch .note{border:1px dashed #71808c;border-radius:5px;padding:10px 12px;color:var(--muted);font-size:13px;background:#fff}.loop{margin-top:14px;border:1px dashed #71808c;border-radius:5px;padding:10px 12px;color:var(--muted);font-size:13px;background:#fff}.failures{margin-top:22px;display:grid;grid-template-columns:repeat(5,1fr);gap:14px}.failure{background:var(--fail);border:1px solid #c9958b;border-radius:5px;padding:12px;font-size:14px}.failure strong{display:block;margin-bottom:4px}.section{margin-top:24px;border-top:1px solid var(--line);padding-top:16px}ul{margin:8px 0;padding-left:20px}code{background:#eef1f3;padding:1px 4px;border-radius:3px}@media(max-width:700px){main{padding:22px 14px}h1{font-size:23px}.failures{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<h1>PC 端自适应 VAD 阈值 + 设备端降噪旁路</h1>
+<p>Archify workflow · 状态：<strong>草稿，待确认</strong> · 目的：把写死的 <code>rms_threshold=350</code> 换成按环境底噪算的动态阈值，让 2–3 米的小声说话不再被漏掉；同时给设备端降噪加一个运行期开关，把「到底是不是 NS 压了语音」这件事一次判死</p>
+<div class="meta"><span class="tag">L1 改判定分支</span><span class="tag">PC 端自适应</span><span class="tag">固件加控制帧</span><span class="tag">固定阈值保留为回退</span><span class="tag">底噪取低分位</span></div>
+<div class="legend"><span class="l-system">系统/验收</span><span class="l-process">处理</span><span class="l-manual">人工/外部触发</span><span class="l-fail">失败/兜底出口</span></div>
+<section class="flow" aria-label="自适应 VAD 主流程">
+<div class="row">
+<div class="node system">上行音频帧<br><code>AUD0</code> · 320 采样<br>20 ms 一帧<span class="arrow"></span></div>
+<div class="node process">逐帧算 RMS<br><code>_rms(pcm)</code><br>（原有，不改）<span class="arrow"></span></div>
+<div class="node process">底噪基线估计<br>最近 500 帧取 P20<br><b>只更新非语音帧</b><span class="arrow"></span></div>
+<div class="node process">阈值<br><code>clamp(底噪×3, 50, 1200)</code><br>阈值自身 τ≈4 s 平滑<span class="arrow"></span></div>
+<div class="node process">VAD 判定<br><code>rms &gt;= 阈值</code><br>start/hangover 不动<span class="arrow"></span></div>
+<div class="node system">正常链路<br>切句 → 转写 → 气泡<br>→ 转写落盘</div>
+</div>
+<div class="branch">
+<div class="node process">界面回显<br>底噪 / 当前阈值<br>电平条按动态阈值归一</div>
+<div class="node manual">降噪 A/B 开关<br>下行 <code>NS:on|off</code></div>
+<div class="note"><b>基线为什么取低分位而不取平均</b>：说话帧只占少数，平均会被语音抬上去，低分位（P20）仍然落在底噪上。<br><b>为什么只更新非语音帧</b>：否则你连说 10 秒，基线就被自己的声音顶到语音电平，阈值跟着涨——正是现在这个毛病换个形式复发。<br><b>冷启动</b>：窗口填满前（约 0.5 s）沿用 350 这个保守值，填满后平滑过渡到估计值，不会一上来就跳变。<br><b>A/B 开关</b>：只影响设备端降噪，与阈值无关；关掉后上行是 AEC 输出直通，用来判定语音被压到底是谁干的。</div>
+</div>
+<div class="loop">闭环：<code>底噪估计 → 阈值 → VAD → 底噪估计</code>。这条环<b>一直跑</b>，不是启动时校准一次——环境噪声自己会变（开空调、关窗），一次性校准过一会儿就失效。</div>
+<div class="failures">
+<div class="failure"><strong>启动就开说</strong>窗口一开始被语音帧污染：因为只采信非语音帧，加上窗口未满时用 350 兜底，第一句话仍然按老阈值判，不会被凭空抬高。</div>
+<div class="failure"><strong>持续大声噪声</strong>风扇开到最大、底噪接近语音电平：阈值被 1200 上限封死，不会涨到永远够不着；界面能看到「底噪」数值，一眼判断是不是环境太吵。</div>
+<div class="failure"><strong>绝对静音</strong>底噪接近 0：阈值被 50 下限兜住，避免趋近 0 把任何风吹草动都当成一句话往云端送。</div>
+<div class="failure"><strong>自适应反而误触发</strong>噪声被当成语音、转写出一堆垃圾：<code>config.json</code> 里 <code>vad.adaptive=false</code> 一键退回固定 350，不需要改代码重打包。</div>
+<div class="failure"><strong>老固件不认 NS 开关</strong>下行 <code>NS:on|off</code> 无回应：只在日志记一笔，不影响 VAD、转写、回读任何主链路。</div>
+<div class="failure"><strong>估计器自锁（实现期发现）</strong>房间底噪本来就高于初始 350 时，每一帧都被判成「语音帧」而被拒绝入窗，底噪永远是 0、阈值永远降不下来。修法两条：前 0.5 s（25 帧）<b>无条件采样</b>完成冷启动；之后每 2 s（<code>max_stale</code>）强采一帧。强采是限速的，10 s 窗口里最多 5 帧噪声，P20 不受影响。</div>
+</div>
+</section>
+<section class="section"><strong>边界与约束</strong><ul><li>改动范围：<code>micapp/vad.py</code>（估计器）、<code>micapp/config.py</code>（新增 <code>vad.adaptive/ratio/floor/cap</code>）、<code>micapp/ui.py</code>（显示底噪与阈值、A/B 开关）、<code>main.py</code>（接线）；固件侧只加 <code>NS:on|off</code> 控制帧与 <code>audio_ns_set_enabled()</code>。</li><li><code>start_ms</code> / <code>hangover_ms</code> / 切句长度与落盘逻辑<b>一个字不动</b>。</li><li>固定阈值 350 保留为默认回退路径，自适应可一键关掉。</li><li>设备端降噪<b>默认仍常开</b>，不随底噪自动关——A/B 开关只给人用。</li><li>不做：按频段判语音、AGC 自动增益、设备端自适应降噪、按句训练个性化阈值。</li></ul></section>
+<section class="section"><strong>验收结果（2026-10-29）</strong><ul>
+<li>离线回归 <b>16 项全 PASS</b>（<code>F:\cache\adaptive_vad_test.py</code>）：冷启动沿用 350 / 安静房底噪 25→阈值 120 / 小声 RMS 150 能切句 / 同条件自适应关闭则漏句 / 嘈杂底噪 500→阈值封顶 1200 / 连说 500 帧基线不涨 / 绝对静音阈值不低于 120 / 自适应关闭恒为 350 / on_level 三元组 / P20 不被 20% 大值拉走 / <b>底噪在 45~75 之间抖动时阈值 5 s 内 span=0</b>。</li>
+<li>抖动处理（两轮）：先加死区，实测仍不够——<b>真机上阈值在 55~76 之间飘</b>，因为底噪在 18~25 漂、乘 3 放大了 7 倍。根因是 α=0.2 在 50 Hz 下时间常数只有 0.1 s，等于没滤。改为对<b>阈值本身</b>做 τ≈4 s 的平滑后，模拟同样 18→25 的漂移，5 s 内波动从 21 个单位降到 <b>3.6</b>。另外试过「语音段内冻结阈值」，会把「噪声高于阈值则永远 active」的死锁引回来，已撤回。</li>
+<li><b>实现期修复死锁</b>：底噪高于初始阈值时估计器自锁（见下方失败出口），加「冷启动 0.5 s 无条件采样 + 每 2 s 强采一帧」。</li>
+<li>真机：新固件烧录后上行 <b>48–51 pkt/s</b>；新 EXE 启动日志 <code>vad adaptive=True ratio=3.0 floor=120 cap=1200 fixed=170</code>，界面实时显示 <b>底噪 22–23 · 阈值 120</b>、丢包 0、模式 全双工。</li>
+<li>A/B 开关双向验证：发 <code>NS:off</code> 后 STAT 回 <code>ns=off</code> 且 <code>ns_frames</code> 冻结在 4122；发 <code>NS:on</code> 后 <code>ns=on</code>，帧数 4164 → 4286（+122 / 1.2 s ≈ 50 包/s × 2 子帧）。</li>
+<li>真机实测（诊断日志，每 5 s）：环境 <b>p10 17 / p50 22 / p90 30 / max 99</b>；用户两句话整句 <b>RMS 110、125</b>，当时阈值 120——擦线通过（转写记录 14:19:06「1234」、14:19:14「然后你看一下大概是。」）。据此把下限 120 → 50，阈值落到 <b>57</b>。稳态 5 s 阈值波动 <b>0</b>（唯一一次跳动是冷启动 170→120）。</li>
+<li><b>未验证</b>：真人对 2–3 米说话能否被切句、关掉降噪后底噪读数是否如预期上跳——都需要人出声。</li>
+</ul></section>
+<section class="section"><strong>待决问题（已按推荐取值，用户可推翻）</strong><ul><li>倍数 <b>3 倍</b>（≈ +9.5 dB），可配。</li><li>下限 <b>50</b> / 上限 <b>1200</b>；窗口 <b>500 帧（10 s）</b>取 <b>P20</b>；底噪平滑 α=0.2，<b>阈值自身再平滑 α=0.005（50 Hz 下 τ≈4 s）</b>，首次估出底噪时直接跳到位，不慢慢爬。</li><li><b>下限 120 → 50（实测后调）</b>：本机底噪 p50≈22 / p90≈30，用户语音整句 RMS 只有 110–125，原下限 120 让阈值正好压在语音线上。改后阈值 = 19×3 = <b>57</b>，在噪声 p90（30）与语音（110）之间各留一倍余量；噪声里 99 级的毛刺是瞬时的，VAD 要求连续 6 帧超标才起句，过不去。</li><li>A/B 开关做成界面上的一个开关，不新增独立脚本。</li></ul></section>
+<section class="section"><strong>验收标准</strong><ul><li>安静房间：底噪自动估到 ≈25（NS 开）或 ≈100（NS 关），阈值落到下限 50，2–3 米正常说话能切出句子。</li><li>有稳态噪声：阈值随底噪抬升但不超过 1200，噪声本身不被切成句子。</li><li>连说 10 秒：阈值不因语音而抬升（验证「只更新非语音帧」真的生效）。</li><li>关掉 A/B 开关后 STAT 显示 <code>ns=off</code>，上行 RMS 回到 AEC 输出电平；重开恢复。</li></ul></section>
+<section class="section"><strong>已知局限</strong><ul><li>上限是常数：如果环境噪声本身就超过语音电平（可闻但说不清），阈值封顶后仍可能漏句——那时该处理的是降噪，不是阈值。</li><li>P20 假设「说话帧占比 &lt; 80%」。连续朗读或长时间播音时基线可能被拉高，这是 A/B 开关与界面上底噪读数存在的意义。</li></ul></section>
+</main>
+</body>
+</html>

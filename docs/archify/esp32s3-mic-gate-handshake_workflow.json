@@ -1,0 +1,162 @@
+{
+  "schema": "archify-workflow-v3",
+  "name": "esp32s3-mic-gate-handshake",
+  "title": "PC 启动时探测板子 AEC 能力，自动决定全双工还是半双工",
+  "status": "implemented-2026-10-29",
+  "decisions": [
+    {
+      "question": "探测失败怎么走",
+      "answer": "按半双工启动，界面底部写明原因"
+    },
+    {
+      "question": "界面显不显示模式与依据",
+      "answer": "显示：顶部芯片给模式，底栏常驻判定依据，芯片 tooltip 同文"
+    },
+    {
+      "question": "config.mic_gate 代码默认值是否改为 on",
+      "answer": "不改，保持 auto（语义已是按探测走；改名字比改默认值更清楚）"
+    }
+  ],
+  "verification": [
+    "广播 STAT 实机探测：0.11 s 回包，state=True，来源 192.168.237.168",
+    "对不存在的 IP 探测：3×0.4 s = 1.22 s 后返回 None → 半双工",
+    "新 EXE 在 mic_gate=auto 下 0.94 s 完成判定，日志 mic gate: 板子上报 aec=on：全双工，不装门控",
+    "界面芯片『模式 全双工』+ 底栏判定依据，上行 51.0 pkt/s、丢包 0",
+    "回归：6 条判定分支 + 4 条回包解析全部 PASS",
+    "修正：广播 STAT 因板子 Wi-Fi 省电不可靠（实测广播 3 次全超时 3.02 s，单播 0.06 s），改为上行包学 IP 后单播；修复后启动 0.82 s 判定为全双工，48.4 pkt/s、丢包 0"
+  ],
+  "source": "mic-desktop/main.py(gate 装配)+micapp/gate.py(build_gate); tarot-esp32/main/audio_speaker.cc(STAT 回包 aec=on|off); 2026-10-29 AEC 验收结论",
+  "nodes": [
+    {
+      "id": "boot",
+      "type": "system",
+      "label": "PC 端启动 mic-desktop（EXE 或 python）"
+    },
+    {
+      "id": "readcfg",
+      "type": "process",
+      "label": "读 config.mic_gate：off / auto / on"
+    },
+    {
+      "id": "probe",
+      "type": "manual",
+      "label": "先取 config.board_ip，没有就在接收线程启动前占用上行端口学习来源 IP；再单播 STAT（1 s×3）。广播只作兜底"
+    },
+    {
+      "id": "decide",
+      "type": "process",
+      "label": "解析回包里的 aec=on|off 得出口径"
+    },
+    {
+      "id": "full",
+      "type": "process",
+      "label": "全双工：不装 MicGate，音频直通 VAD"
+    },
+    {
+      "id": "half",
+      "type": "process",
+      "label": "半双工：装 MicGate，朗读期间静音"
+    },
+    {
+      "id": "ui",
+      "type": "process",
+      "label": "界面显示当前模式与判定依据"
+    },
+    {
+      "id": "run",
+      "type": "system",
+      "label": "正常链路：收包 → VAD → 转写 → TTS 下行"
+    }
+  ],
+  "edges": [
+    {
+      "from": "boot",
+      "to": "readcfg",
+      "label": "加载配置"
+    },
+    {
+      "from": "readcfg",
+      "to": "probe",
+      "label": "mic_gate=auto"
+    },
+    {
+      "from": "readcfg",
+      "to": "full",
+      "label": "mic_gate=off（显式）"
+    },
+    {
+      "from": "readcfg",
+      "to": "half",
+      "label": "mic_gate=on（显式）"
+    },
+    {
+      "from": "probe",
+      "to": "decide",
+      "label": "收到 STAT 回包"
+    },
+    {
+      "from": "decide",
+      "to": "full",
+      "label": "aec=on"
+    },
+    {
+      "from": "decide",
+      "to": "half",
+      "label": "aec=off 或回包不认识"
+    },
+    {
+      "from": "full",
+      "to": "run",
+      "label": "直通"
+    },
+    {
+      "from": "half",
+      "to": "run",
+      "label": "门控"
+    },
+    {
+      "from": "decide",
+      "to": "ui",
+      "label": "判定依据回显"
+    }
+  ],
+  "failure_exits": [
+    {
+      "from": "probe",
+      "condition": "板子没上电 / 不在同一网段 / 3 次都超时",
+      "to": "按半双工启动并在界面提示「未探测到板子，先按半双工」，不在运行期重探"
+    },
+    {
+      "from": "decide",
+      "condition": "回包是老固件（没有 aec= 字段）",
+      "to": "视为 aec=off，装 MicGate 半双工"
+    },
+    {
+      "from": "readcfg",
+      "condition": "config 里写了显式 on / off",
+      "to": "跳过探测，完全按配置（用户说了算）"
+    },
+    {
+      "from": "probe",
+      "condition": "探测本身干扰了正在进行的下行播放",
+      "to": "只在启动时探一次且仅发 4 字节；之后不再发任何探测包"
+    },
+    {
+      "from": "full",
+      "condition": "运行中板子被换成没有 AEC 的固件",
+      "to": "不热切换；重启 PC 端重新探测才改变模式"
+    }
+  ],
+  "constraints": {
+    "scope": "只改 mic-desktop 启动时的门控装配逻辑；板子固件一行不动",
+    "read_only": "只读 STAT 回包，不发任何改变板子状态的控制帧",
+    "explicit_wins": "config 显式 on/off 优先于自动探测，保留人工覆盖",
+    "one_shot": "只在启动时探测一次，不做周期性心跳或运行期热切换",
+    "offline_default": "探测失败一律退回半双工（安全默认），宁可多一道静音也不能重复转写",
+    "out_of_scope": "设备端静音不上行、周期性健康检查、多板子选择"
+  },
+  "references": [
+    "docs/archify/esp32s3-device-aec_workflow.html",
+    "tarot-esp32/hardware-esp32s3-inmp441.md（STAT 字段表）"
+  ]
+}

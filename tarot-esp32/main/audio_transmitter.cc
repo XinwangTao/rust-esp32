@@ -4,6 +4,9 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "audio_aec.h"
+#include "audio_ns.h"
+#include "audio_vad.h"
 #include "audio_speaker.h"
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
@@ -13,7 +16,7 @@
 #include "freertos/task.h"
 
 extern "C" void rust_udp_send_audio(const uint8_t *data, size_t len, uint32_t sequence,
-                                     uint32_t sample_rate, uint16_t sample_count);
+                                     uint32_t sample_rate, uint16_t sample_count, uint8_t flags);
 extern "C" void rust_audio_network_start(void);
 
 namespace {
@@ -27,9 +30,14 @@ constexpr gpio_num_t PIN_KEY_3 = GPIO_NUM_9;
 constexpr uint32_t SAMPLE_RATE = 16000;
 constexpr size_t SAMPLES_PER_FRAME = 320;
 constexpr size_t FRAME_QUEUE_LENGTH = 4;
+constexpr uint8_t FLAG_SPEECH = 0x01;   // 上行 flags bit0：设备端判为语音
+// bit1 = 本帧的 bit0 可信（AFE 生效）。老固件两位都是 0，PC 端据此区分
+// 「没有 VAD 提示」和「AFE 判为静音」——不区分的话老固件就永远切不出句子。
+constexpr uint8_t FLAG_VAD_VALID = 0x02;
 
 struct AudioFrame {
     uint32_t sequence;
+    uint8_t flags;
     std::array<int16_t, SAMPLES_PER_FRAME> samples;
 };
 
@@ -54,6 +62,20 @@ void capture_task(void *) {
         for (size_t i = 0; i < SAMPLES_PER_FRAME; ++i) {
             frame.samples[i] = static_cast<int16_t>(i2s_samples[i] >> 16);
         }
+        // 音频前端三段：消回声 → 降噪 → 判语音，全部是独立 API。
+        // （esp_afe_sr 一体化版本在本机上 fetch 恒失败，见 audio_afe.cc 顶部记录。）
+        frame.flags = 0;
+        // 设备端消回声：AEC 未就绪时这里直接返回，上行仍是原始麦克风数据
+        audio_aec_filter(frame.samples.data(), SAMPLES_PER_FRAME);
+        // 再降稳态环境噪声：必须排在 AEC 之后；NS 未就绪时同样直接返回
+        audio_ns_process(frame.samples.data(), SAMPLES_PER_FRAME);
+        // 最后判语音：看的是 AEC+NS 之后的信号，比 PC 端拿 RMS 猜准得多
+        if (audio_vad_ready()) {
+            frame.flags = FLAG_VAD_VALID;
+            if (audio_vad_process(frame.samples.data(), SAMPLES_PER_FRAME)) {
+                frame.flags |= FLAG_SPEECH;
+            }
+        }
         if (xQueueSend(frame_queue, &frame, 0) != pdTRUE) {
             ++dropped_frames;
             if ((dropped_frames % 32) == 0) {
@@ -70,7 +92,7 @@ void send_task(void *) {
     while (xQueueReceive(frame_queue, &frame, portMAX_DELAY) == pdTRUE) {
         rust_udp_send_audio(reinterpret_cast<const uint8_t *>(frame.samples.data()),
                             sizeof(frame.samples), frame.sequence, SAMPLE_RATE,
-                            SAMPLES_PER_FRAME);
+                            SAMPLES_PER_FRAME, frame.flags);
     }
 }
 
@@ -115,6 +137,12 @@ extern "C" esp_err_t audio_transmitter_start(void) {
     std_config.slot_cfg.bit_shift = true;
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_handle, &std_config));
     ESP_ERROR_CHECK(i2s_channel_enable(rx_handle));
+
+    // 音频前端：AEC → NS → VAD，三段的实现与参数都是实机验证过的。
+    // esp_afe_sr 一体化方案在本机（esp-sr 2.4.7 + IDF 5.3.1）跑不通，详见 audio_afe.cc。
+    audio_aec_start();  // 失败只告警，上行退化直通
+    audio_ns_start();   // 同理：NS 起不来就只保留 AEC 输出
+    audio_vad_start();  // 起不来则上行 flags 恒 0，PC 端退回能量阈值
 
     frame_queue = xQueueCreate(FRAME_QUEUE_LENGTH, sizeof(AudioFrame));
     if (frame_queue == nullptr) {

@@ -7,15 +7,26 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "audio_aec.h"
+#include "audio_ns.h"
+#include "audio_vad.h"
 #include "audio_speaker.h"
 
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_psram.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <netinet/in.h>
 #include <sys/socket.h>
+
+// 上行目标自学习（Rust 侧实现）：收到的下行包来源 IP 会成为新的上行目标
+extern "C" void rust_udp_set_target_ip(uint32_t ip_be);
+extern "C" uint32_t rust_udp_target_ip(void);
+extern "C" uint16_t rust_udp_target_port(void);
 
 #ifndef SPEAKER_BCLK
 #define SPEAKER_BCLK 15
@@ -96,6 +107,9 @@ bool tx_init(int bclk, int ws, int dout) {
 
 // 阻塞写 PCM（s16LE mono），I2S 时钟自动节流
 void tx_write(const int16_t *samples, size_t count) {
+    // 先喂给音频前端的参考通道，再送 I2S（ref 略早于实际出声，AEC 内部会自适应对齐）。
+    // 两条链各自维护自己的参考环形缓冲，没起来的那个是空操作。
+    audio_aec_feed_ref(samples, count);
     if (tx_handle == nullptr) return;
     size_t written = 0;
     i2s_channel_write(tx_handle, samples, count * sizeof(int16_t), &written,
@@ -151,10 +165,63 @@ void downlink_task(void *) {
 
     static uint8_t pkt[2048];
     while (true) {
-        int len = recvfrom(sock, pkt, sizeof(pkt), 0, nullptr, nullptr);
+        sockaddr_in from{};
+        socklen_t from_len = sizeof(from);
+        int len = recvfrom(sock, pkt, sizeof(pkt), 0, (sockaddr *)&from, &from_len);
         if (len <= 0) continue;
+        // 谁给我们发下行，接下来上行就发给谁（端口沿用编译期 AUDIO_UDP_TARGET 的端口）
+        if (from.sin_family == AF_INET && from.sin_addr.s_addr != 0) {
+            rust_udp_set_target_ip(from.sin_addr.s_addr);
+        }
+        // 控制帧 STAT → 回包报告堆/PSRAM/当前上行目标，PC 侧用来验证而不用碰串口
+        if (len >= 4 && memcmp(pkt, "STAT", 4) == 0) {
+            uint32_t raw = rust_udp_target_ip();
+            uint32_t host = ntohl(raw);
+            uint32_t aec_blocks = 0, ref_under = 0, ref_over = 0;
+            int aec_frame = 0;
+            uint32_t aec_avg_us = 0, aec_max_us = 0;
+            audio_aec_stats(&aec_blocks, &ref_under, &ref_over, &aec_frame);
+            audio_aec_timing(&aec_avg_us, &aec_max_us);
+            uint32_t ns_frames = 0, ns_skipped = 0;
+            uint32_t ns_avg_us = 0, ns_max_us = 0;
+            audio_ns_stats(&ns_frames, &ns_skipped);
+            audio_ns_timing(&ns_avg_us, &ns_max_us);
+            uint32_t vad_frames = 0, vad_speech = 0;
+            audio_vad_stats(&vad_frames, &vad_speech);
+            char reply[640];
+            int n = snprintf(reply, sizeof(reply),
+                             "STAT heap=%u inner_free=%u psram_free=%u psram_total=%u "
+                             "aec=%s frame=%d blocks=%u us_avg=%u us_max=%u ref_uf=%u ref_of=%u "
+                             "ns=%s ns_frames=%u ns_us_avg=%u ns_us_max=%u ns_skip=%u "
+                             "vad=%s vad_frames=%u vad_speech=%u "
+                             "learned=%s "
+                             "target=%u.%u.%u.%u:%d\n",
+                             (unsigned)esp_get_free_heap_size(),
+                             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                             (unsigned)esp_psram_get_size(),
+                             audio_aec_ready() ? "on" : "off", aec_frame,
+                             (unsigned)aec_blocks, (unsigned)aec_avg_us, (unsigned)aec_max_us,
+                             (unsigned)ref_under, (unsigned)ref_over,
+                             audio_ns_enabled() ? "on" : "off", (unsigned)ns_frames,
+                             (unsigned)ns_avg_us, (unsigned)ns_max_us, (unsigned)ns_skipped,
+                             audio_vad_ready() ? "on" : "off", (unsigned)vad_frames,
+                             (unsigned)vad_speech,
+                             raw ? "yes" : "no",
+                             (unsigned)((host >> 24) & 0xFF), (unsigned)((host >> 16) & 0xFF),
+                             (unsigned)((host >> 8) & 0xFF), (unsigned)(host & 0xFF),
+                             (unsigned)rust_udp_target_port());
+            sendto(sock, reply, n > 0 ? n : 0, 0, (sockaddr *)&from, from_len);
+            continue;
+        }
         if (len >= 5 && memcmp(pkt, "PIN:", 4) == 0) {
             handle_pin_frame(pkt, len);
+            continue;
+        }
+        // 控制帧 "NS:on" / "NS:off" → 运行期旁路设备端降噪，PC 侧用来做 A/B 对照
+        if (len >= 5 && memcmp(pkt, "NS:", 3) == 0) {
+            const bool on = (pkt[3] == 'o' && pkt[4] == 'n');
+            audio_ns_set_enabled(on);
             continue;
         }
         // 控制帧: 前 4 字节 "TONE" → 播放自检音（PC 侧用它验证扬声器链路）

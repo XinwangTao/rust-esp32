@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PC 端自动回读（说完就念）</title>
+<style>
+:root{color-scheme:light;--ink:#18212b;--muted:#607080;--line:#b8c5cf;--surface:#f5f7f8;--system:#d9ecf4;--process:#e4eee1;--manual:#f7e7c9;--fail:#f3d7d2}
+*{box-sizing:border-box}body{margin:0;background:#fff;color:var(--ink);font:15px/1.5 system-ui,"Microsoft YaHei",sans-serif}main{max-width:1240px;margin:0 auto;padding:28px 24px 44px}h1{font-size:28px;margin:0 0 6px}p{margin:4px 0;color:var(--muted)}.meta{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0 22px}.tag{border:1px solid var(--line);padding:4px 9px;border-radius:4px;background:var(--surface);font-size:13px}.legend{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0 18px;color:var(--muted);font-size:13px}.legend span:before{content:"";display:inline-block;width:12px;height:12px;margin-right:5px;vertical-align:-2px;border:1px solid var(--line)}.l-system:before{background:var(--system)}.l-process:before{background:var(--process)}.l-manual:before{background:var(--manual)}.l-fail:before{background:var(--fail)}.flow{border:1px solid var(--line);background:var(--surface);padding:22px;overflow:auto}.row{display:grid;grid-template-columns:repeat(6,minmax(140px,1fr));gap:26px;min-width:1060px;align-items:center}.node{min-height:92px;border:1px solid var(--line);border-radius:5px;padding:11px 10px;display:flex;align-items:center;justify-content:center;text-align:center;font-weight:650;position:relative}.system{background:var(--system)}.process{background:var(--process)}.manual{background:var(--manual)}.arrow{position:absolute;right:-27px;top:50%;width:26px;border-top:2px solid #71808c}.arrow:after{content:"";position:absolute;right:-1px;top:-5px;border-left:7px solid #71808c;border-top:5px solid transparent;border-bottom:5px solid transparent}.branch{margin-top:16px;display:grid;grid-template-columns:minmax(140px,1fr) minmax(140px,1fr) 2fr;gap:26px;min-width:1060px;align-items:center}.branch .note{border:1px dashed #71808c;border-radius:5px;padding:10px 12px;color:var(--muted);font-size:13px;background:#fff}.loop{margin-top:14px;border:1px dashed #71808c;border-radius:5px;padding:10px 12px;color:var(--muted);font-size:13px;background:#fff}.failures{margin-top:22px;display:grid;grid-template-columns:repeat(5,1fr);gap:14px}.failure{background:var(--fail);border:1px solid #c9958b;border-radius:5px;padding:12px;font-size:14px}.failure strong{display:block;margin-bottom:4px}.section{margin-top:24px;border-top:1px solid var(--line);padding-top:16px}ul{margin:8px 0;padding-left:20px}code{background:#eef1f3;padding:1px 4px;border-radius:3px}@media(max-width:700px){main{padding:22px 14px}h1{font-size:23px}.failures{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<h1>PC 端自动回读（说完就念）</h1>
+<p>Archify workflow · 状态：<strong>已实现（2026-10-29）</strong> · 目的：板子转写出一句话，就自动用 TTS 念出来，不用再打字点「朗读」</p>
+<div class="meta"><span class="tag">L1 新增分支</span><span class="tag">只改 mic-desktop</span><span class="tag">固件零改动</span><span class="tag">默认关闭</span><span class="tag">必须有去重与刹车</span></div>
+<div class="legend"><span class="l-system">系统/验收</span><span class="l-process">处理</span><span class="l-manual">人工/外部触发</span><span class="l-fail">失败/兜底出口</span></div>
+<section class="flow" aria-label="自动回读主流程">
+<div class="row">
+<div class="node system">转写结果<br><code>engine.on_result</code><br>(text, idx)<span class="arrow"></span></div>
+<div class="node process">闸门<br>最短长度 + 去重<br>最近 5 条已念过<span class="arrow"></span></div>
+<div class="node process">循环刹车<br>连续 3 次且<br>间隔 &lt; 2 s<span class="arrow"></span></div>
+<div class="node process">TTS 合成<br>+ UDP 5001 下发<br><code>Speaker.speak</code><span class="arrow"></span></div>
+<div class="node process">状态回显<br>已回读 / 跳过原因<br>刹车提示<span class="arrow"></span></div>
+<div class="node system">正常链路<br>界面气泡 + 转写落盘<br>（原有，不改）</div>
+</div>
+<div class="branch">
+<div class="node process">排队<br>最多 1 条</div>
+<div class="node manual">手动朗读<br>输入框 + 回车</div>
+<div class="note">自动回读<b>只挂在 <code>on_result</code> 一个入口</b>上，手动「朗读」按钮的路径一个字不动——两条路互不影响。<br>正在播报时又来了新结果：不打断当前播放，<b>排队最多 1 条</b>，再多的直接丢最新的（宁可少念，不可积压成延迟）。<br>去重键是<b>归一化后的文本</b>（去空白/标点），与最近 5 条已念文本比对：AEC 残留把刚念的话又转写回来时，靠这一步挡住自激。</div>
+</div>
+<div class="loop">回环：<code>转写 → 闸门 → 念 → 被麦克风收回去 → 又转写</code>。AEC 把回声压到环境底噪附近（实测播放期间平均 RMS 97 vs 底噪 104，VAD 阈值 350），正常不会成环；<b>去重 + 刹车是防它万一成环的两道保险</b>。</div>
+<div class="failures">
+<div class="failure"><strong>板子不在线</strong>没有可用 IP（没收到过上行包且 config 也没写 board_ip）：跳过本句，界面提示「未回读：板子不在线」，不影响转写与落盘。</div>
+<div class="failure"><strong>自激循环</strong>念出去又被转写回来：先靠文本去重挡住；仍连续触发则刹车暂停并提示「回读已暂停，疑似自激」，需手动恢复或关掉开关。</div>
+<div class="failure"><strong>合成失败</strong>SAPI 报错：跳过这一句，只记日志，不影响下一条，也不重试（避免卡在坏句上）。</div>
+<div class="failure"><strong>噪声误转写被念出来</strong>环境噪声或短促声响被判成文字：少于 2 个有效字符不回读；仍频繁出现就把 <code>auto_speak</code> 关掉或先上设备端降噪。</div>
+<div class="failure"><strong>说话被打断的错觉</strong>半双工（板子没 AEC）时朗读期间麦克风是静的：你说话会被丢弃，不会被转写——这是既有行为，图不变，界面已有「模式 半双工」提示。</div>
+</div>
+</section>
+<section class="section"><strong>边界与约束</strong><ul><li>改动范围：<code>main.py</code> 的 <code>on_result</code> 接一条回读支路 + 新增 <code>micapp/readback.py</code> + <code>config</code> 加 <code>auto_speak</code>；<b>固件与 UDP 协议零改动</b>。</li><li>只处理「STT 出结果」这一条触发源，不做「检测到说话即回读」（那需要额外的 VAD 钩子，本轮不做）。</li><li>手动「朗读」按钮、转写气泡、转写落盘全部保持原样。</li><li>默认关闭：自动回读会把误转写也念出来，风险比手动大，必须由人显式打开。</li><li>不做：变声/多音色、按句长截断、情绪与语速调节、回读历史记录。</li></ul></section>
+<section class="section"><strong>验收结果（2026-10-29）</strong><ul>
+<li>闸门回归 <b>18 项全 PASS</b>：开关关 / 太短 / 去重 / 无 IP / 播放中排队 / 只留最新 / 播完续播 / 刹车 3 次 / 刹车后暂停 / 间隔够大不刹车。</li>
+<li>实机接线验证：13:48:31 一条转写结果「2」被判 <code>too_short</code> 跳过，日志 <code>readback skip (too_short)</code>——说明 <code>on_result → Readback</code> 已经接上，噪声误转写被挡在念之前。</li>
+<li><b>未验证</b>：真说话触发「念出来」的完整链路（需人对着板子说话）。</li>
+</ul></section>
+<section class="section"><strong>已决问题（用户确认 2026-10-29）</strong><ul><li>默认<b>关</b>（代码 <code>auto_speak: false</code>）；<code>dist/config.json</code> 里已显式打开。</li><li>朗读中来了新句子：<b>排队最多 1 条，超出丢最新的</b>。</li><li>刹车阈值：<b>连续 3 次且间隔 &lt; 2 s</b>，实测再调。</li></ul></section>
+</main>
+</body>
+</html>

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PC 端自动探测板子 AEC 能力</title>
+<style>
+:root{color-scheme:light;--ink:#18212b;--muted:#607080;--line:#b8c5cf;--surface:#f5f7f8;--system:#d9ecf4;--process:#e4eee1;--manual:#f7e7c9;--fail:#f3d7d2}
+*{box-sizing:border-box}body{margin:0;background:#fff;color:var(--ink);font:15px/1.5 system-ui,"Microsoft YaHei",sans-serif}main{max-width:1240px;margin:0 auto;padding:28px 24px 44px}h1{font-size:28px;margin:0 0 6px}p{margin:4px 0;color:var(--muted)}.meta{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0 22px}.tag{border:1px solid var(--line);padding:4px 9px;border-radius:4px;background:var(--surface);font-size:13px}.legend{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0 18px;color:var(--muted);font-size:13px}.legend span:before{content:"";display:inline-block;width:12px;height:12px;margin-right:5px;vertical-align:-2px;border:1px solid var(--line)}.l-system:before{background:var(--system)}.l-process:before{background:var(--process)}.l-manual:before{background:var(--manual)}.l-fail:before{background:var(--fail)}.flow{border:1px solid var(--line);background:var(--surface);padding:22px;overflow:auto}.row{display:grid;grid-template-columns:repeat(6,minmax(140px,1fr));gap:26px;min-width:1060px;align-items:center}.node{min-height:92px;border:1px solid var(--line);border-radius:5px;padding:11px 10px;display:flex;align-items:center;justify-content:center;text-align:center;font-weight:650;position:relative}.system{background:var(--system)}.process{background:var(--process)}.manual{background:var(--manual)}.arrow{position:absolute;right:-27px;top:50%;width:26px;border-top:2px solid #71808c}.arrow:after{content:"";position:absolute;right:-1px;top:-5px;border-left:7px solid #71808c;border-top:5px solid transparent;border-bottom:5px solid transparent}.branch{margin-top:16px;display:grid;grid-template-columns:minmax(140px,1fr) minmax(140px,1fr) 2fr;gap:26px;min-width:1060px;align-items:center}.branch .note{border:1px dashed #71808c;border-radius:5px;padding:10px 12px;color:var(--muted);font-size:13px;background:#fff}.loop{margin-top:14px;border:1px dashed #71808c;border-radius:5px;padding:10px 12px;color:var(--muted);font-size:13px;background:#fff}.failures{margin-top:22px;display:grid;grid-template-columns:repeat(5,1fr);gap:14px}.failure{background:var(--fail);border:1px solid #c9958b;border-radius:5px;padding:12px;font-size:14px}.failure strong{display:block;margin-bottom:4px}.section{margin-top:24px;border-top:1px solid var(--line);padding-top:16px}ul{margin:8px 0;padding-left:20px}code{background:#eef1f3;padding:1px 4px;border-radius:3px}@media(max-width:700px){main{padding:22px 14px}h1{font-size:23px}.failures{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<h1>PC 端自动探测板子 AEC 能力</h1>
+<p>Archify workflow · 状态：<strong>已确认并实现（2026-10-29）</strong> · 目的：不再靠人记得改配置——板子有 AEC 就走全双工，没有就退回半双工</p>
+<div class="meta"><span class="tag">L1 启动分支</span><span class="tag">只改 mic-desktop</span><span class="tag">固件零改动</span><span class="tag">只读 STAT</span><span class="tag">探测失败偏安全</span></div>
+<div class="legend"><span class="l-system">系统/验收</span><span class="l-process">处理</span><span class="l-manual">人工/外部触发</span><span class="l-fail">失败/兜底出口</span></div>
+<section class="flow" aria-label="PC 端门控模式自动协商主流程">
+<div class="row">
+<div class="node system">PC 端启动<br>mic-desktop<span class="arrow"></span></div>
+<div class="node process">读 <code>config.mic_gate</code><br>off / auto / on<span class="arrow"></span></div>
+<div class="node manual">先拿板子 IP<br>config → 上行包学习<br>再单播 <code>STAT</code><br>1 s ×3 次<span class="arrow"></span></div>
+<div class="node process">解析回包<br><code>aec=on|off</code><span class="arrow"></span></div>
+<div class="node process">全双工<br>不装 MicGate<span class="arrow"></span></div>
+<div class="node system">正常链路<br>收包 → VAD → 转写<br>→ TTS 下行</div>
+</div>
+<div class="branch">
+<div class="node process">半双工<br>装 MicGate</div>
+<div class="node process">界面显示<br>当前模式 + 判定依据</div>
+<div class="note">分支来自同一个 <code>decide</code>：<code>aec=on</code> → 全双工；<code>aec=off</code>、回包不认识、探测超时 → 半双工（安全默认）。<br>两条分支最终都汇入同一条链路，区别只在 <code>UdpReceiver</code> 的下游是谁：<code>slicer.feed</code> 还是 <code>MicGate</code>。</div>
+</div>
+<div class="loop">一次性判定：整条流程只在启动时跑一遍。运行期不重探、不热切换——板子换了固件就重启 PC 端。</div>
+<div class="failures">
+<div class="failure"><strong>板子不在线</strong>没上电 / 不同网段 / 3 次超时：按半双工启动，界面提示「未探测到板子，先按半双工」。</div>
+<div class="failure"><strong>老固件</strong>回包里没有 <code>aec=</code> 字段：视为 <code>aec=off</code>，装 MicGate。</div>
+<div class="failure"><strong>配置写了显式值</strong><code>mic_gate=on|off</code>：跳过探测，完全按配置来。</div>
+<div class="failure"><strong>探测干扰播放</strong>只在启动时探一次、只发 4 字节；之后再也不发探测包。</div>
+<div class="failure"><strong>运行中换了固件</strong>不热切换；下次启动重新探测才改模式。</div>
+</div>
+</section>
+<section class="section"><strong>为什么不直接用配置</strong>
+<ul>
+<li>现状：<code>dist/config.json</code> 里写死 <code>"off"</code>。一旦板子刷回旧固件（比如排查问题时回滚），配置不改就会把回声当人声转写——错误无声无息。</li>
+<li>现状：代码默认是 <code>"auto"</code>（装门控）。新固件明明支持全双工，却仍然静音麦克风，白白丢掉「边说边播」的能力。</li>
+<li>两种错法都靠人记忆纠正，改成「问板子要能力」就不用记了。</li>
+</ul>
+</section>
+<section class="section"><strong>边界与约束</strong><ul><li>只改 mic-desktop 启动逻辑（<code>main.py</code> + <code>micapp/gate.py</code> 的 <code>build_gate</code>）；板子固件一行不动。</li><li>只读 <code>STAT</code>，不发 <code>TONE</code>/<code>PIN:</code>/<code>TARGET:</code> 等会改变板子状态的控制帧。</li><li>config 显式 <code>on</code>/<code>off</code> 永远优先，保人工作业口。</li><li>失败一律偏安全：宁可多静音，也不让回声变重复转写。</li><li>不做：周期性健康检查、运行期热切换、多板子选择。</li></ul></section>
+<section class="section"><strong>验收结果（2026-10-29，实机）</strong>
+<ul>
+<li>探测成功：广播 STAT → 0.11 s 收到回包，<code>state=True</code>，来源 <code>192.168.237.168</code>（顺带完成板子发现）。</li>
+<li>超时兜底：对不存在的 IP 探测，3×0.4 s = 1.22 s 后返回 <code>None</code> → 半双工。</li>
+<li>启动实测：新 EXE 在 <code>mic_gate=auto</code> 下 0.94 s 完成判定，日志 <code>mic gate: 板子上报 aec=on：全双工，不装门控</code>；界面芯片「模式 全双工」，底栏显示判定依据；上行 <code>51.0 pkt/s</code>、<code>丢包 0</code>。</li>
+<li>回归：6 条判定分支（显式 on/off、aec=on、aec=off、超时、缺省键）+ 4 条回包解析全部 PASS。</li>
+</ul>
+</section>
+<section class="section"><strong>实现修正（2026-10-29，实测发现）</strong>
+<ul>
+<li><b>广播 STAT 不可靠</b>：板子开着 Wi-Fi 省电（<code>wifi:pm start, type: 1</code>），广播包落在休眠窗口里就丢。实测同一时刻：广播 3 次全超时（3.02 s），单播 0.06 s 就回。原图「<code>board_ip</code> 为空就发广播」被判错，EXE 因此误判成半双工。</li>
+<li><b>改为</b>：先取 <code>config.board_ip</code>；没有就在接收线程启动前短暂占用上行端口（≤1 s），从 <code>AUD0</code> 包的来源地址学到板子 IP，再单播 <code>STAT</code>；广播只当兜底。</li>
+<li>判定语义与失败出口都不变（<code>aec=on</code> → 全双工，其余 → 半双工），变的只是「怎么找到板子」。</li>
+<li>修复后实测：启动 0.82 s 完成判定，日志 <code>mic gate: 板子上报 aec=on：全双工，不装门控</code>，界面 <code>48.4 pkt/s</code> / <code>丢包 0</code>。</li>
+</ul>
+</section>
+<section class="section"><strong>已决问题</strong><ul><li>探测失败（板子不在线）→ <strong>按半双工启动</strong>，界面底部写明「未探测到板子，先按半双工」。</li><li>界面 → <strong>显示</strong>：顶部芯片给「模式 全双工/半双工」，底栏常驻判定依据，芯片 tooltip 同文。</li><li><code>config.mic_gate</code> 代码默认值 → <strong>保持 <code>"auto"</code></strong>（语义已是「按探测走」，换个名字比改默认值更容易误导）。</li></ul></section>
+</main>
+</body>
+</html>

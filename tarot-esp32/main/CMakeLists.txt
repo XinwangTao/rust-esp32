@@ -12,10 +12,10 @@ foreach(v SPEAKER_BCLK SPEAKER_WS SPEAKER_DOUT SPEAKER_EN SPEAKER_UDP_PORT)
 endforeach()
 
 idf_component_register(
-    SRCS "audio_main.cc" "audio_transmitter.cc" "audio_speaker.cc"
+    SRCS "audio_main.cc" "audio_transmitter.cc" "audio_speaker.cc" "audio_aec.cc" "audio_ns.cc" "audio_vad.cc"
     INCLUDE_DIRS "." "ffi"
     REQUIRES tarot_core
-    PRIV_REQUIRES nvs_flash esp_wifi esp_event esp_netif driver esp_driver_i2s
+    PRIV_REQUIRES nvs_flash esp_wifi esp_event esp_netif driver esp_driver_i2s esp_psram esp-sr
 )
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
