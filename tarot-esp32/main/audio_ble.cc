@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "audio_ns.h"
 #include "audio_speaker.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -190,6 +191,16 @@ int gatt_access(uint16_t, uint16_t, struct ble_gatt_access_ctxt *ctxt, void *) {
 
     if (len >= 4 && std::memcmp(buf, "STAT", 4) == 0) {
         reply_status();
+    } else if (len >= 4 && std::memcmp(buf, "TONE", 4) == 0) {
+        // 与 UDP 侧同名控制帧：重播自检音，用来确认扬声器链路而不接串口
+        speaker_play_tone();
+    } else if (len >= 5 && std::memcmp(buf, "NS:", 3) == 0) {
+        // 与 UDP 侧同名控制帧：运行期旁路设备端降噪，做 A/B 对照
+        const bool on = (buf[3] == 'o' && buf[4] == 'n');
+        audio_ns_set_enabled(on);
+        uint8_t ack[16];
+        const int n = snprintf(reinterpret_cast<char *>(ack), sizeof(ack), "NS %s", on ? "on" : "off");
+        if (n > 0) send_flat(ack, static_cast<size_t>(n));
     } else if (len >= 4 && std::memcmp(buf, "PING", 4) == 0) {
         // 只回显 token（跳过 "PING " 前缀）。注意 buf 不是以 0 结尾的，
         // 直接 %s 会读到越界垃圾，所以先拷进带终止符的缓冲。

@@ -27,7 +27,7 @@
 <div class="row">
 <div class="node process">运行链路<br>切句 → 转写<br>→ 回读 / 落盘<span class="arrow"></span></div>
 <div class="node process">PC 端 TTS<br>SAPI 16 kHz<br>切 20 ms → ADPCM<span class="arrow"></span></div>
-<div class="node process">写特征 RX<br>写无响应<br>20 ms 节流<span class="arrow"></span></div>
+<div class="node process">写特征 RX<br>166 B 音频 或<br>文本控制帧<span class="arrow"></span></div>
 <div class="node process">板子解码<br>320 采样<br>→ I2S TX<span class="arrow"></span></div>
 <div class="node process">AEC 参考<br>同一帧喂前端<br>自己放的音不进上行</div>
 </div>
@@ -59,6 +59,7 @@
 <li><b>修正二 · 板子每秒重启</b>：跳过 Wi-Fi 后 <code>speaker_start()</code> 仍建 UDP 下行监听，lwIP 断言 <code>tcpip_send_msg_wait_sem (Invalid mbox)</code>，GATT 发现永远完不成，PC 侧只看到连接超时；BLE 模式下不启动扬声器下行。</li>
 <li><b>修正三 · ADPCM 漏写符号位</b>：<code>delta</code> 未并进 <code>sign</code>，解码端只加不减会漂到满幅，听起来是纯噪声、极易误判成丢包；离线往返测试发现。</li>
 <li><b>下行 TTS（已验证）</b>：3.7 秒语音共 185 帧，板子 STAT <code>rx=185</code>——一帧不少；同期上行 49.8 包/秒同时进行，走的是真实 <code>Speaker → SAPI → BLE</code> 路径。</li>
+<li><b>控制帧统一（已验证）</b>：RX 特征同时接文本控制帧，与 UDP 侧同名同义——<code>STAT</code> / <code>TONE</code> / <code>NS:on|off</code> / <code>PING</code>。实测 <code>NS:off</code> → 回 <code>NS off</code>、<code>NS:on</code> → 回 <code>NS on</code>，STAT 回包正常；界面底栏的降噪 A/B 按钮与手动朗读在蓝牙模式下都能用。</li>
 <li><b>全双工（已验证）</b>：下行 2.00 秒提示音期间上行 <b>126 包 / 50.1 包每秒、丢帧 0</b>。两种丢弃分开计数后 <code>drop_fail=0</code>（<code>drop_nolink</code> 是没连 PC 时空跑，不算问题）。</li>
 <li><b>延迟（已验证）</b>：PING/PONG 30/30 收到，RTT 最小 4.2 / 中位 <b>21.4</b> / p95 84.6 / 最大 90.4 ms，单向链路约 10.7 ms。RTT 含音频包排队，所以明显大于 15 ms 连接间隔。</li>
 <li><b>修正四 · PING 无回包</b>：板子把整条命令回显成 <code>PONG</code>（非 NUL 结尾的 <code>buf</code> 直接 <code>%s</code>），token 错位成 <code>"PING"</code>，PC 永远匹配不上；改为跳过前缀并拷进带终止符的缓冲。</li>

@@ -271,3 +271,5 @@ extern "C" void speaker_start_i2s_only(void) {
 extern "C" void speaker_write(const int16_t *samples, size_t count) {
     tx_write(samples, count);
 }
+
+extern "C" void speaker_play_tone(void) { play_selftest_tone(); }
