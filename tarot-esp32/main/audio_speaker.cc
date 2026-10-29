@@ -240,9 +240,10 @@ void downlink_task(void *) {
         tx_write(samples, payload_len / 2);
     }
 }
-}  // namespace
 
-extern "C" void speaker_start(void) {
+// 只做硬件部分：I2S TX 初始化 + 功放使能 + 开机自检音。
+// UDP 下行任务单独起，方便 BLE 模式只取这一半。
+void speaker_init_hw() {
     if (!tx_init(SPEAKER_BCLK, SPEAKER_WS, SPEAKER_DOUT)) {
         ESP_LOGW(TAG, "I2S TX init failed(%d/%d/%d); speaker disabled", SPEAKER_BCLK,
                  SPEAKER_WS, SPEAKER_DOUT);
@@ -253,5 +254,20 @@ extern "C" void speaker_start(void) {
                  SPEAKER_WS, SPEAKER_DOUT, SPEAKER_EN, SPEAKER_RATE);
         play_selftest_tone();
     }
+}
+
+}  // namespace
+
+extern "C" void speaker_start(void) {
+    speaker_init_hw();
     xTaskCreate(downlink_task, "spk_downlink", 4096, nullptr, 5, nullptr);
+}
+
+extern "C" void speaker_start_i2s_only(void) {
+    speaker_init_hw();
+    ESP_LOGI(TAG, "speaker: I2S only (no UDP downlink task)");
+}
+
+extern "C" void speaker_write(const int16_t *samples, size_t count) {
+    tx_write(samples, count);
 }

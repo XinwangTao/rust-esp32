@@ -171,9 +171,9 @@ extern "C" esp_err_t audio_transmitter_start(void) {
              static_cast<unsigned>(SAMPLE_RATE), static_cast<int>(PIN_I2S_SCK),
              static_cast<int>(PIN_I2S_WS), static_cast<int>(PIN_I2S_SD));
 #ifdef AUDIO_LINK_BLE
-    // BLE 模式没有网络栈（Wi-Fi 没起），speaker 的 UDP 下行监听会调 lwIP
-    // 然后断言 "Invalid mbox" 并无限重启。下行 TTS 本轮不在范围内，直接不启动。
-    ESP_LOGI(TAG, "BLE mode: speaker downlink disabled");
+    // BLE 模式没有网络栈：只初始化 I2S 硬件，不起 UDP 下行任务（那会让 lwIP 断言重启）。
+    // 下行 TTS 改由 BLE 的 RX 特征喂进 speaker_write。
+    speaker_start_i2s_only();
 #else
     speaker_start();  // 失败仅告警，不影响上行
 #endif

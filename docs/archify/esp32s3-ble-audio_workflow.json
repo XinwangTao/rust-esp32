@@ -1,9 +1,9 @@
 {
   "schema": "archify-workflow-v3",
   "name": "esp32s3-ble-audio",
-  "title": "BLE 音频模式：ADPCM 压缩上行，脱离 Wi-Fi",
+  "title": "BLE 音频模式：ADPCM 双向（上行麦克风 + 下行 TTS），脱离 Wi-Fi",
   "status": "implemented-2026-10-29",
-  "source": "tarot-esp32/main/audio_transmitter.cc（采集→AEC→NS→VAD 现有链路）、audio_speaker.cc、new audio_ble.cc/.h；mic-desktop/micapp/udp_receiver.py（接口模板）、new micapp/ble_receiver.py；IDF 5.3.1 examples/bluetooth/nimble/{ble_spp, ble_phy, bleprph_wifi_coex}",
+  "source": "tarot-esp32/main/audio_transmitter.cc（采集→AEC→NS→VAD 现有链路）、audio_speaker.cc、new audio_ble.cc/.h；mic-desktop/micapp/udp_receiver.py（接口模板）、new micapp/ble_receiver.py、new micapp/adpcm.py、micapp/tts.py；IDF 5.3.1 examples/bluetooth/nimble/{ble_spp, ble_phy, bleprph_wifi_coex}",
   "nodes": [
     {
       "id": "frontend",
@@ -13,17 +13,17 @@
     {
       "id": "adpcm",
       "type": "process",
-      "label": "ADPCM 编码：320 采样 → 160 字节，每帧独立不跨帧预测"
+      "label": "上行 ADPCM 编码：320 采样 → 160 字节，每帧独立不跨帧预测"
     },
     {
       "id": "gatt",
       "type": "process",
-      "label": "BLE 通知：NimBLE GATT，163 字节 / 包，2M PHY"
+      "label": "BLE 通知 TX：NimBLE GATT，166 字节 / 包（6 头 + 160 ADPCM）"
     },
     {
       "id": "connect",
       "type": "manual",
-      "label": "PC 扫描并按设备名连接（MicDesktop-XXXX）"
+      "label": "PC 扫描并按设备名连接（MicDesktop-XXXX），MTU 247"
     },
     {
       "id": "decode",
@@ -44,6 +44,21 @@
       "id": "reconnect",
       "type": "manual",
       "label": "断线重连：退避 1/2/4/8 s，上限 10 s"
+    },
+    {
+      "id": "tts",
+      "type": "process",
+      "label": "PC 端回读：SAPI 合成 16 kHz → 切 20 ms 帧 → ADPCM 编码"
+    },
+    {
+      "id": "downrx",
+      "type": "process",
+      "label": "写特征 RX（写无响应，20 ms 节流）：166 字节 ADPCM 包"
+    },
+    {
+      "id": "play",
+      "type": "process",
+      "label": "板子解码 → speaker_write → I2S TX，同一帧喂 AEC 参考"
     }
   ],
   "edges": [
@@ -55,7 +70,7 @@
     {
       "from": "adpcm",
       "to": "gatt",
-      "label": "160 字节 + 3 字节头（seq、flags）"
+      "label": "160 字节 + 6 字节头（seq、flags、pred、index）"
     },
     {
       "from": "gatt",
@@ -65,7 +80,7 @@
     {
       "from": "connect",
       "to": "decode",
-      "label": "收到的通知包"
+      "label": "收到的通知包（166 字节为音频，其它长度为控制回包）"
     },
     {
       "from": "decode",
@@ -81,12 +96,32 @@
       "from": "reconnect",
       "to": "connect",
       "label": "链路断开后重新建立"
+    },
+    {
+      "from": "run",
+      "to": "tts",
+      "label": "自动回读 / 手动朗读"
+    },
+    {
+      "from": "tts",
+      "to": "downrx",
+      "label": "每 20 ms 写一包，实时节流"
+    },
+    {
+      "from": "downrx",
+      "to": "play",
+      "label": "解码 320 采样 → I2S"
+    },
+    {
+      "from": "play",
+      "to": "frontend",
+      "label": "AEC 参考通道：自己放的音不进上行"
     }
   ],
   "failure_exits": [
     {
       "from": "gatt",
-      "condition": "对端 MTU 只有 23 字节，163 字节一包塞不进",
+      "condition": "对端 MTU 只有 23 字节，166 字节一包塞不进",
       "to": "自动降级为多通知分片；STAT 报当前 MTU，便于确认是否处于退化模式"
     },
     {
@@ -113,40 +148,55 @@
       "from": "connect",
       "condition": "PC 没有可用蓝牙适配器或驱动",
       "to": "input_mode 切回 udp，原有 Wi-Fi 链路功能不退化"
+    },
+    {
+      "from": "downrx",
+      "condition": "下行播报时链路已断 / 写特征失败",
+      "to": "Speaker 返回「下发失败：链路已断开」，不阻塞转写主流程；板子侧 drop_fail 单独计数（实测 0）"
+    },
+    {
+      "from": "play",
+      "condition": "下行自激：扬声器的声音被麦克风采回去再转写一遍",
+      "to": "I2S 写之前把同一帧喂 AEC 参考通道；实测下行 2 秒期间上行仍 50.1 包/秒、丢帧 0，未挤掉上行"
     }
   ],
   "constraints": {
-    "board": "开 CONFIG_BT_ENABLED + NimBLE；新增 main/audio_ble.cc/.h；audio_transmitter.cc 把帧交给 BLE 而不是 UDP",
-    "pc": "新增 micapp/ble_receiver.py（与 UdpReceiver 同接口）+ ADPCM 解码；config.json 加 input_mode",
-    "untouched": "采集、AEC、NS、VAD、切句、转写、回读、落盘一条都不动——BLE 只替换音频传输这一段",
-    "bandwidth": "原始 32 KB/s（256 kbps）→ ADPCM 4:1 后 8 KB/s（64 kbps），留 4 倍余量；直传原始 PCM 会踩上限，一次重传就掉音",
+    "board": "开 CONFIG_BT_ENABLED + NimBLE；新增 main/audio_ble.cc/.h；audio_transmitter.cc 把帧交给 BLE 而不是 UDP；audio_speaker.cc 拆出 speaker_init_hw / speaker_start_i2s_only / speaker_write，BLE 模式不建 UDP 下行任务",
+    "pc": "新增 micapp/ble_receiver.py（与 UdpReceiver 同接口）+ micapp/adpcm.py（编解码）+ config.json 的 input_mode；tts.Speaker 加 ble 通道",
+    "untouched": "采集、AEC、NS、VAD、切句、转写、回读策略、落盘一条都不动——BLE 只替换音频传输这一段",
+    "bandwidth": "原始 32 KB/s（256 kbps）→ ADPCM 4:1 后 8 KB/s（64 kbps），留 4 倍余量；双向共 128 kbps，实测上下行同时跑满不丢帧",
     "adpcm_independent_frames": "每 20 ms 重置预测器与步长。跨帧预测一旦丢包会持续失真，牺牲一点信噪比换取丢包容错",
-    "mode_exclusive": "Wi-Fi 与 BLE 二选一，不做射频共存",
-    "out_of_scope": "下行 TTS 走 BLE、手机 App、BLE 配对加密绑定、LE Audio/LC3（S3 在 IDF 5.3 不支持）"
+    "mode_exclusive": "Wi-Fi 与 BLE 二选一，不做射频共存；AUDIO_LINK=udp|ble 写在 audio.env 里",
+    "out_of_scope": "手机 App、BLE 配对加密绑定、LE Audio/LC3（S3 在 IDF 5.3 不支持）、多板同时连接"
   },
   "decisions_pending": [
     {
       "question": "设备广播名",
-      "leaning": "MicDesktop-XXXX，后四位取 MAC，方便多块板子区分"
+      "leaning": "MicDesktop-XXXX，后四位取 MAC，方便多块板子区分（已实现）"
     },
     {
       "question": "连接间隔",
-      "leaning": "15 ms（50 包/秒下约 76% 连接事件被占用，比 7.5 ms 省电、比 30 ms 有余量）"
+      "leaning": "15 ms（50 包/秒下约 76% 连接事件被占用，比 7.5 ms 省电、比 30 ms 有余量）；实测 RTT 中位 21.4 ms，一次性 PING 会排在音频包后面，不需要更低"
     },
     {
       "question": "ADPCM 变体",
-      "leaning": "IMA ADPCM（无授权、解码十行代码、误差小）"
+      "leaning": "IMA ADPCM（无授权、解码十行代码、误差小），上下行共用同一套表（已实现）"
     }
   ],
   "verification": [
     "板子广播 MicDesktop-0EB6，PC 扫描可见并连接，MTU 协商 247（166 字节音频包一包发完，不分片）",
-    "探针 12 秒：601 包 / 50.1 包每秒、丢帧 0、601 包全部带 VAD 结论、其中 16 包判为语音",
-    "桌面端 BLE 模式：日志 input mode: ble，vad n 持续增长（5 秒 241 帧 ≈ 48 包/秒），hint 随说话增长，已用设备端 VAD 切句（utterance 1.24 s）",
+    "上行探针 12 秒：601 包 / 50.1 包每秒、丢帧 0、601 包全部带 VAD 结论、其中 16 包判为语音",
+    "桌面端 BLE 模式：日志 input mode: ble，vad n 持续增长，hint 随说话增长，已用设备端 VAD 切句（utterance 1.24 s）",
     "ADPCM 离线往返 31~37 dB（1 kHz 34.3 / 440 Hz 小音量 36.8 / 300 Hz+噪声 31.6），全零帧、头字段、短包三类边界都过",
+    "下行 TTS（已验证）：3.7 秒语音共 185 帧，板子 STAT rx=185 —— 一帧不少；同期上行 49.8 包/秒同时进行",
+    "全双工（已验证）：下行 2.00 秒提示音期间上行 126 包 / 50.1 包每秒、丢帧 0；两种丢弃分开计数后 drop_fail=0（drop_nolink 是没连 PC 时空跑，不算问题）",
+    "延迟（已验证）：PING/PONG 30/30 收到，RTT 最小 4.2 / 中位 21.4 / p95 84.6 / 最大 90.4 ms，单向链路约 10.7 ms。RTT 含音频包排队，故明显大于 15 ms 连接间隔",
     "修正一：广播包超长。128 位 UUID(18B)+完整名(17B)+flags 超过 31 字节，ble_gap_adv_set_fields 返回 rc=4(EMSGSIZE) 且不广播；改为名字放扫描响应",
-    "修正二：BLE 模式下板子每秒重启。跳过 Wi-Fi 后 speaker_start() 仍建 UDP 下行监听，lwIP 断言 tcpip_send_msg_wait_sem(Invalid mbox)，GATT 发现永远完不成，表现为 PC 连接超时；BLE 模式下不启动扬声器下行",
+    "修正二：BLE 模式下板子每秒重启。跳过 Wi-Fi 后 speaker_start() 仍建 UDP 下行监听，lwIP 断言 tcpip_send_msg_wait_sem(Invalid mbox)，GATT 发现永远完不成，表现为 PC 连接超时；BLE 模式改用 speaker_start_i2s_only()",
     "修正三：ADPCM 编码器漏写符号位，解码端只加不减会漂到满幅（听起来是纯噪声，极易误判成丢包）；离线往返测试发现，修复后 31~37 dB",
-    "待验证：BLE 模式下真实说话的转写质量、断线自动重连、端到端延迟"
+    "修正四：PING 无回包。板子把整条命令（非 NUL 结尾的 buf 直接 %s）回显成 PONG，token 错位成 \"PING\"，PC 永远匹配不上；改为跳过前缀并拷进带终止符的缓冲",
+    "修正五：RTT 被量化。Windows 上 time.monotonic() 精度约 15.6 ms，量出 0/16/31 的假分布；改 perf_counter 后得到 4.2~90.4 ms 的真实分布",
+    "待验证：BLE 模式下 STT 引擎对 ADPCM 窄带音质的实际转写准确率（已人工听通，未做字准率对照）"
   ],
   "references": [
     "docs/archify/esp32s3-device-vad_workflow.html",

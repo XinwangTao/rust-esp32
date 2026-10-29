@@ -3,7 +3,9 @@
 #include <cstdio>
 #include <cstring>
 
+#include "audio_speaker.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "host/ble_hs.h"
 #include "host/util/util.h"
 #include "nimble/nimble_port.h"
@@ -26,7 +28,13 @@ volatile bool s_subscribed = false;
 volatile uint16_t s_mtu = 23;
 uint16_t s_seq = 0;
 volatile uint32_t s_sent = 0;
-volatile uint32_t s_dropped = 0;
+// 两种丢弃分开计数：没订阅时的丢弃是正常的（板子在等 PC 连），
+// 发送失败才是链路/缓冲问题。混在一起看会误判成严重丢包。
+volatile uint32_t s_drop_nolink = 0;
+volatile uint32_t s_drop_fail = 0;
+volatile uint32_t s_rx_frames = 0;   // 下行收到的 TTS 帧数
+
+
 
 // IMA ADPCM 查表
 const int8_t kIndexTable[16] = {-1, -1, -1, -1, 2, 4, 6, 8,
@@ -41,6 +49,31 @@ const int16_t kStepTable[89] = {
     4026,  4428,  4871,  5358,  5894,  6484,  7132,  7845,  8630,  9493,  10442,
     11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794,
     32767};
+
+// 下行 ADPCM 解码：与 encode_frame 对称，按帧独立，不保留跨帧状态
+void decode_frame(const uint8_t *in, int16_t *pcm) {
+    int pred = static_cast<int16_t>(in[3] | (in[4] << 8));
+    int index = in[5];
+    if (index > 88) index = 88;
+    pcm[0] = static_cast<int16_t>(pred);
+    const uint8_t *d = in + kHeader;
+    for (size_t n = 0; n + 1 < kFrameSamples; ++n) {
+        const uint8_t byte = d[n >> 1];
+        const uint8_t nib = ((n & 1) == 0) ? (byte >> 4) : (byte & 0x0F);
+        const int step = kStepTable[index];
+        int diff = step >> 3;
+        if (nib & 4) diff += step;
+        if (nib & 2) diff += step >> 1;
+        if (nib & 1) diff += step >> 2;
+        pred += (nib & 8) ? -diff : diff;
+        if (pred > 32767) pred = 32767;
+        if (pred < -32768) pred = -32768;
+        index += kIndexTable[nib];
+        if (index < 0) index = 0;
+        if (index > 88) index = 88;
+        pcm[n + 1] = static_cast<int16_t>(pred);
+    }
+}
 
 // 一帧独立编码：预测器取本帧第一个采样，步长索引从 0 开始。
 // 不做跨帧预测，丢一包只坏 20 ms。
@@ -105,17 +138,17 @@ void encode_frame(const int16_t *pcm, uint8_t flags, uint8_t *out) {
 
 void send_flat(const uint8_t *buf, size_t len) {
     if (s_conn == BLE_HS_CONN_HANDLE_NONE || !s_subscribed) {
-        ++s_dropped;
+        ++s_drop_nolink;
         return;
     }
     struct os_mbuf *om = ble_hs_mbuf_from_flat(buf, len);
     if (om == nullptr) {
-        ++s_dropped;
+        ++s_drop_fail;
         return;
     }
     const int rc = ble_gatts_notify_custom(s_conn, s_tx_handle, om);
     if (rc != 0) {
-        ++s_dropped;   // om 已被 notify_custom 释放
+        ++s_drop_fail;   // om 已被 notify_custom 释放
         return;
     }
     ++s_sent;
@@ -124,20 +157,52 @@ void send_flat(const uint8_t *buf, size_t len) {
 void reply_status() {
     char text[192];
     const int n = snprintf(text, sizeof(text),
-                           "STAT ble=on mtu=%u conn=%d sub=%d sent=%u drop=%u\n",
+                           "STAT ble=on mtu=%u conn=%d sub=%d sent=%u drop_nolink=%u "
+                           "drop_fail=%u rx=%u\n",
                            static_cast<unsigned>(s_mtu), s_conn == BLE_HS_CONN_HANDLE_NONE ? 0 : 1,
                            s_subscribed ? 1 : 0, static_cast<unsigned>(s_sent),
-                           static_cast<unsigned>(s_dropped));
+                           static_cast<unsigned>(s_drop_nolink), static_cast<unsigned>(s_drop_fail),
+                           static_cast<unsigned>(s_rx_frames));
     if (n > 0) send_flat(reinterpret_cast<const uint8_t *>(text), static_cast<size_t>(n));
 }
 
 int gatt_access(uint16_t, uint16_t, struct ble_gatt_access_ctxt *ctxt, void *) {
     if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return BLE_ATT_ERR_UNLIKELY;
+
+    const uint16_t total = OS_MBUF_PKTLEN(ctxt->om);
+
+    // 下行音频：166 字节 = 6 字节头 + 160 字节 ADPCM，解出 320 采样直接送扬声器。
+    // 播放同时 tx_write 会把 PCM 喂给 AEC 当参考，所以全双工下行不会被麦克风采回去。
+    if (total == kPacket) {
+        uint8_t frame[kPacket];
+        if (os_mbuf_copydata(ctxt->om, 0, kPacket, frame) != 0) return BLE_ATT_ERR_UNLIKELY;
+        int16_t pcm[kFrameSamples];
+        decode_frame(frame, pcm);
+        speaker_write(pcm, kFrameSamples);
+        ++s_rx_frames;
+        return 0;
+    }
+
     uint8_t buf[32];
-    uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
+    uint16_t len = total;
     if (len > sizeof(buf)) len = sizeof(buf);
     if (os_mbuf_copydata(ctxt->om, 0, len, buf) != 0) return BLE_ATT_ERR_UNLIKELY;
-    if (len >= 4 && std::memcmp(buf, "STAT", 4) == 0) reply_status();
+
+    if (len >= 4 && std::memcmp(buf, "STAT", 4) == 0) {
+        reply_status();
+    } else if (len >= 4 && std::memcmp(buf, "PING", 4) == 0) {
+        // 只回显 token（跳过 "PING " 前缀）。注意 buf 不是以 0 结尾的，
+        // 直接 %s 会读到越界垃圾，所以先拷进带终止符的缓冲。
+        char token[24] = {0};
+        const uint16_t off = (len > 5) ? 5 : 4;
+        uint16_t tl = (len > off) ? static_cast<uint16_t>(len - off) : 0;
+        if (tl > sizeof(token) - 1) tl = sizeof(token) - 1;
+        if (tl > 0) std::memcpy(token, buf + off, tl);
+        uint8_t text[48];
+        const int n = snprintf(reinterpret_cast<char *>(text), sizeof(text), "PONG %s rx=%u",
+                               token, static_cast<unsigned>(s_rx_frames));
+        if (n > 0) send_flat(text, static_cast<size_t>(n));
+    }
     return 0;
 }
 
@@ -296,7 +361,7 @@ extern "C" bool audio_ble_connected(void) { return s_subscribed; }
 extern "C" void audio_ble_send(const int16_t *samples, size_t count, uint8_t flags) {
     if (samples == nullptr || count < kFrameSamples) return;
     if (s_conn == BLE_HS_CONN_HANDLE_NONE || !s_subscribed) {
-        ++s_dropped;
+        ++s_drop_nolink;
         return;
     }
     uint8_t packet[kPacket];
@@ -306,6 +371,6 @@ extern "C" void audio_ble_send(const int16_t *samples, size_t count, uint8_t fla
 
 extern "C" void audio_ble_stats(uint32_t *sent, uint32_t *dropped, uint16_t *mtu) {
     if (sent != nullptr) *sent = s_sent;
-    if (dropped != nullptr) *dropped = s_dropped;
+    if (dropped != nullptr) *dropped = s_drop_nolink + s_drop_fail;
     if (mtu != nullptr) *mtu = s_mtu;
 }
