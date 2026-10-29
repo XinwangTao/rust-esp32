@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>语音输入：把无线麦变成系统级麦克风（说话即上屏）</title>
+<style>
+:root{color-scheme:light;--ink:#18212b;--muted:#607080;--line:#b8c5cf;--surface:#f5f7f8;--system:#d9ecf4;--process:#e4eee1;--manual:#f7e7c9;--fail:#f3d7d2}
+*{box-sizing:border-box}body{margin:0;background:#fff;color:var(--ink);font:15px/1.5 system-ui,"Microsoft YaHei",sans-serif}main{max-width:1240px;margin:0 auto;padding:28px 24px 44px}h1{font-size:28px;margin:0 0 6px}p{margin:4px 0;color:var(--muted)}.meta{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0 22px}.tag{border:1px solid var(--line);padding:4px 9px;border-radius:4px;background:var(--surface);font-size:13px}.legend{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0 18px;color:var(--muted);font-size:13px}.legend span:before{content:"";display:inline-block;width:12px;height:12px;margin-right:5px;vertical-align:-2px;border:1px solid var(--line)}.l-system:before{background:var(--system)}.l-process:before{background:var(--process)}.l-manual:before{background:var(--manual)}.l-fail:before{background:var(--fail)}.flow{border:1px solid var(--line);background:var(--surface);padding:22px;overflow:auto}.row{display:grid;grid-template-columns:repeat(6,minmax(140px,1fr));gap:26px;min-width:1060px;align-items:center}.node{min-height:92px;border:1px solid var(--line);border-radius:5px;padding:11px 10px;display:flex;align-items:center;justify-content:center;text-align:center;font-weight:650;position:relative}.system{background:var(--system)}.process{background:var(--process)}.manual{background:var(--manual)}.arrow{position:absolute;right:-27px;top:50%;width:26px;border-top:2px solid #71808c}.arrow:after{content:"";position:absolute;right:-1px;top:-5px;border-left:7px solid #71808c;border-top:5px solid transparent;border-bottom:5px solid transparent}.branch{margin-top:16px;display:grid;grid-template-columns:minmax(140px,1fr) minmax(140px,1fr) 2fr;gap:26px;min-width:1060px;align-items:center}.branch .note{border:1px dashed #71808c;border-radius:5px;padding:10px 12px;color:var(--muted);font-size:13px;background:#fff}.loop{margin-top:14px;border:1px dashed #71808c;border-radius:5px;padding:10px 12px;color:var(--muted);font-size:13px;background:#fff}.failures{margin-top:22px;display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.failure{background:var(--fail);border:1px solid #c9958b;border-radius:5px;padding:12px;font-size:14px}.failure strong{display:block;margin-bottom:4px}.section{margin-top:24px;border-top:1px solid var(--line);padding-top:16px}ul{margin:8px 0;padding-left:20px}code{background:#eef1f3;padding:1px 4px;border-radius:3px}@media(max-width:700px){main{padding:22px 14px}h1{font-size:23px}.failures{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<h1>语音输入：把无线麦变成系统级麦克风（说话即上屏）</h1>
+<p>Archify workflow · 状态：<strong>已实现 · 2026-10-29 已验证</strong> · 目的：这块板子最基础的用途是「无线麦克风」——说出来，字就落在你正在用的那个程序里，而不是只落在本应用的聊天窗口</p>
+<div class="meta"><span class="tag">L2 新集成边界</span><span class="tag">常开，说话即输入</span><span class="tag">模拟键盘逐字注入</span><span class="tag">输入模式下关回读</span><span class="tag">零新增依赖</span></div>
+<div class="legend"><span class="l-system">系统/已有</span><span class="l-process">处理</span><span class="l-manual">人工开关</span><span class="l-fail">失败/兜底出口</span></div>
+<section class="flow" aria-label="语音输入主流程">
+<div class="row">
+<div class="node system">板子采集<br>→ AEC → NS → VAD<br><b>已有，一行不改</b><span class="arrow"></span></div>
+<div class="node system">BLE 上行<br>ADPCM 解码<br><b>已有</b><span class="arrow"></span></div>
+<div class="node process">切句<br>设备端 VAD 优先<br>无结论回退阈值<span class="arrow"></span></div>
+<div class="node process">转写<br>本地 Whisper / 讯飞<br><b>已有，可切</b><span class="arrow"></span></div>
+<div class="node process">输入闸门<br>太短 / 纯噪声<br>重复 / 回读期间<span class="arrow"></span></div>
+<div class="node process">打字注入<br><code>SendInput</code> Unicode<br>不抢焦点</div>
+</div>
+<div class="branch">
+<div class="node manual">总开关<br>界面 + 热键 <b>F9</b><br>暂停 / 恢复</div>
+<div class="node process">回读互斥<br>输入开启<br><b>自动关回读</b></div>
+<div class="note"><b>为什么「常开」要靠闸门而不是按键</b>：用户选择的是「说话即输入」，也就是不给人每次确认的机会——那风险就必须由系统兜。<b>三道闸</b>：①短于 0.6 秒的句子直接丢（咳嗽、键盘敲击、椅子响）；②转写结果少于 2 个有效字丢掉（噪声幻觉多是一两个字）；③连续 3 次且间隔 &lt; 2 秒触发刹车暂停（沿用自动回读那套逻辑，实测能挡住自激）。<br><b>为什么不用键盘钩子库</b>：<code>keyboard</code> / <code>pynput</code> 装的是全局钩子，安全软件会拦、也会拖慢全系统输入。注入只用 <code>SendInput</code>，热键只用 <code>RegisterHotKey</code>，都是 user32 自带能力，<code>ctypes</code> 直接调，零新依赖。<br><b>为什么注入不抢焦点</b>：用户正在微信里打字，这时候程序弹到前面把字打进自己窗口就废了。所以「说话结束时谁在前台，字就进谁」，全程不激活任何窗口。</div>
+</div>
+<div class="loop">链路：<code>板子 → BLE → 解码 → 切句 → 转写 → 闸门 → SendInput → 前台窗口光标处</code>。前半段与现有的对话模式<b>完全共用</b>，唯一区别是转写结果的去向：对话模式显示在聊天区，语音输入模式打进别的程序。两种模式可以同时存在——聊天区照常记一份，方便回看。</div>
+<div class="failures">
+<div class="failure"><strong>转写服务不可用</strong>本地容器没起或云端不通：状态行报具体原因和命令，这一句不上屏——宁可缺一句，也不要把噪声打进别人的输入框。</div>
+<div class="failure"><strong>常开误触发</strong>咳嗽、电视、别人说话被切成句子：0.6 秒 + 2 字 + 刹车三道闸拦；仍挡不住就按 F9 暂停，按钮变黄提示已暂停。</div>
+<div class="failure"><strong>前台就是本应用</strong>说话时焦点在自己窗口：不上屏，只显示在聊天区，避免把字打进自己的输入框。</div>
+<div class="failure"><strong>目标程序权限更高</strong>对方是管理员进程（UAC 隔离），<code>SendInput</code> 无效：文字复制到剪贴板并提示，用户手动 Ctrl+V 兜底。</div>
+<div class="failure"><strong>开会 / 不想被输入</strong>热键一键暂停，恢复同样一键；暂停时转写照常、聊天区照常记，只是不上屏。</div>
+<div class="failure"><strong>手动点朗读</strong>板子开始念：播放期间闸门关闭（等同临时暂停），播完自动恢复，念出来的话不会再被上屏一遍。</div>
+</div>
+</section>
+<section class="section"><strong>边界与约束</strong><ul><li><b>不改</b>：板子固件、BLE 链路、解码、切句、转写全部不动；只加「转写结果 → 系统输入」这一段。</li><li><b>零新增依赖</b>：<code>ctypes</code> 调 <code>user32.SendInput</code> / <code>RegisterHotKey</code>，不装 <code>keyboard</code> / <code>pynput</code> 这类全局钩子库。</li><li><b>不抢焦点</b>：注入时不激活任何窗口，目标是说话结束时的前台窗口。</li><li><b>回读互斥</b>：语音输入开启即关闭自动回读，两者不同时生效。</li><li>不做：语音命令（「换行」「删除」）、标点自动补全、多语言混输、手机端。</li></ul></section>
+<section class="section"><strong>已定（2026-10-29）</strong><ul><li>暂停热键：<b>F9</b>，RegisterHotKey + 自建消息循环，零新增依赖。</li><li>启动默认：<b>默认关</b>，开过一次后写入 <code>state.json</code>，下次启动按上次状态恢复。</li></ul></section>
+<section class="section"><strong>实测结果</strong><ul>
+<li><b>已验证</b> 说话后目标程序出现简体中文、不抢焦点：用户实机测试通过；<code>test_voice_input.py</code> 21/21（真注入 QLineEdit，20 字 / 112 ms）。</li>
+<li><b>已验证</b> F9 暂停/恢复：打包 EXE 上按 F9，按钮「语音输入 开」→「语音输入 暂停」，状态行同步；日志 <code>热键已注册 vk=0x78</code>，回调延迟 1 ms；热键被占用返回 err=1409 不崩。</li>
+<li><b>已验证</b> 开启后自动回读关闭；回读播放期间的那句话不上屏。</li>
+<li><b>已验证</b> 状态持久化：<code>state.json</code> 原子写，重启后与上次一致。</li>
+<li><b>已验证-否</b> 一次 SendInput 批量送多字不可靠：16 字一批时目标窗口只认每批首字（读回「你你你你…6666」），<code>type_text</code> 固定逐字送。</li>
+<li><b>部分验证</b> 环境音误触发：闸门单测覆盖 too_short / too_few / brake，真实环境误触发率待长时间使用观察。</li>
+</ul></section>
+</main>
+</body>
+</html>

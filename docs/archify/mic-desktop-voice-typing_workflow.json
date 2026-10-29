@@ -1,0 +1,179 @@
+{
+  "schema": "archify-workflow-v3",
+  "name": "mic-desktop-voice-typing",
+  "title": "语音输入：把无线麦变成系统级麦克风（说话即上屏）",
+  "status": "implemented-2026-10-29",
+  "source": "现有链路 tarot-esp32（采集→AEC→NS→VAD→BLE）、mic-desktop（解码→切句→转写）；新增 micapp/typer.py（SendInput Unicode）；Windows RegisterHotKey 做暂停热键",
+  "nodes": [
+    {
+      "id": "capture",
+      "type": "system",
+      "label": "板子采集 → AEC → NS → VAD（已有，一行不改）"
+    },
+    {
+      "id": "transport",
+      "type": "system",
+      "label": "BLE 上行 → PC ADPCM 解码（已有）"
+    },
+    {
+      "id": "slice",
+      "type": "process",
+      "label": "切句：设备端 VAD 结论优先，无结论时回退能量阈值（已有 VADSlicer）"
+    },
+    {
+      "id": "stt",
+      "type": "process",
+      "label": "转写：本地 Whisper（默认）/ 讯飞云端，可切"
+    },
+    {
+      "id": "gate",
+      "type": "process",
+      "label": "输入闸门：太短、纯噪声、与上一条重复、回读播放期间 → 丢弃不上屏"
+    },
+    {
+      "id": "inject",
+      "type": "process",
+      "label": "打字注入：SendInput Unicode 逐字送进当前前台窗口，不抢焦点"
+    },
+    {
+      "id": "switch",
+      "type": "manual",
+      "label": "人工开关：界面总开关 + 全局热键暂停/恢复"
+    },
+    {
+      "id": "loop-guard",
+      "type": "process",
+      "label": "回读互斥：语音输入开启时强制关闭自动回读"
+    }
+  ],
+  "edges": [
+    {
+      "from": "capture",
+      "to": "transport",
+      "label": "166 字节 ADPCM 包"
+    },
+    {
+      "from": "transport",
+      "to": "slice",
+      "label": "PCM + VAD 标志"
+    },
+    {
+      "from": "slice",
+      "to": "stt",
+      "label": "一句话的完整 PCM"
+    },
+    {
+      "from": "stt",
+      "to": "gate",
+      "label": "转写文本"
+    },
+    {
+      "from": "gate",
+      "to": "inject",
+      "label": "判定可以上屏"
+    },
+    {
+      "from": "switch",
+      "to": "gate",
+      "label": "关掉时整条链路照常转写，只是不上屏"
+    },
+    {
+      "from": "loop-guard",
+      "to": "stt",
+      "label": "回读关闭后，板子念的话不再进转写"
+    }
+  ],
+  "failure_exits": [
+    {
+      "from": "stt",
+      "condition": "本地转写服务没起 / 云端不通",
+      "to": "状态行报「转写服务不可用 + 具体命令」，这一句不上屏，不吞掉用户的话之外的东西"
+    },
+    {
+      "from": "gate",
+      "condition": "常开模式误触发（咳嗽、电视、别人说话、环境噪声被切成句子）",
+      "to": "三重闸门：短于 0.6 秒的句子直接丢；转写结果少于 2 个有效字丢掉；连续 3 次且间隔 < 2 秒触发刹车暂停（沿用 Readback 的刹车逻辑），界面上按钮变黄提示已暂停"
+    },
+    {
+      "from": "inject",
+      "condition": "当前前台窗口就是本应用自己",
+      "to": "不上屏，改为显示在聊天区——避免把字打进自己的输入框造成循环观感"
+    },
+    {
+      "from": "inject",
+      "condition": "目标窗口是管理员权限进程（UAC 隔离），SendInput 无效",
+      "to": "状态行提示「目标程序权限更高，文字已复制到剪贴板」，用户手动 Ctrl+V 兜底"
+    },
+    {
+      "from": "switch",
+      "condition": "用户正在开会 / 不想被输入",
+      "to": "热键一键暂停，界面按钮显示「已暂停」；恢复同样一键"
+    },
+    {
+      "from": "loop-guard",
+      "condition": "用户手动点「朗读」按钮，板子开始念",
+      "to": "播放期间闸门关闭（等同于临时暂停），播完自动恢复，避免念出来的话又被上屏一遍"
+    }
+  ],
+  "constraints": {
+    "unchanged": "板子固件、BLE 链路、解码、切句、转写全部不动；只加「转写结果 → 系统输入」这一段",
+    "no_new_dep": "只用 ctypes 调 user32 的 SendInput / RegisterHotKey，不引第三方键盘库（避免全局钩子被安全软件拦）",
+    "always_on_risk": "常开是用户明确选择；风险靠三重闸门 + 暂停热键兜，而不是靠每次按键确认",
+    "no_focus_steal": "注入时不激活任何窗口；目标永远是「说话结束时」的前台窗口",
+    "readback_mutex": "语音输入开启即关闭自动回读；两者不同时生效",
+    "out_of_scope": "语音命令（「换行」「删除」这类指令）、标点自动补全、多语言混输、手机端"
+  },
+  "verification": [
+    {
+      "item": "说话后目标程序出现简体中文、不抢焦点",
+      "status": "已验证",
+      "evidence": "用户实机测试通过；test_voice_input.py 21/21 通过（真注入 QLineEdit，20 字/112 ms）"
+    },
+    {
+      "item": "咳嗽、敲键盘等误触发不上屏",
+      "status": "部分验证",
+      "evidence": "闸门单测覆盖 too_short / too_few / brake 三条路径；真实环境误触发率待长时间使用观察"
+    },
+    {
+      "item": "开启语音输入后自动回读确实不再念",
+      "status": "已验证",
+      "evidence": "main.py on_voice_state 把 readback.enabled 置 false；F9 开启后状态行显示「回读已暂停」"
+    },
+    {
+      "item": "F9 暂停后不再上屏，按钮状态同步",
+      "status": "已验证",
+      "evidence": "打包 EXE 上按 F9：按钮「语音输入 开」(accent) → 「语音输入 暂停」(amber)，状态行同步；日志 热键已注册 vk=0x78；回调延迟 1 ms"
+    },
+    {
+      "item": "热键被占用时不崩",
+      "status": "已验证",
+      "evidence": "重复注册返回 err=1409，线程写 error 后正常退出，主流程不受影响"
+    },
+    {
+      "item": "状态持久化",
+      "status": "已验证",
+      "evidence": "state.json 原子写；重启后 VoiceInput.enabled 与上次一致（单测 + 实机启动日志）"
+    },
+    {
+      "item": "一次 SendInput 批量送多字是否可靠",
+      "status": "已验证-否",
+      "evidence": "16 字一批时目标窗口只认每批首字（读回 你你你你…6666）；改逐字送后完全正确，故 type_text 固定逐字"
+    }
+  ],
+  "references": [
+    "docs/archify/esp32s3-ble-audio_workflow.html",
+    "docs/archify/mic-desktop-auto-readback_workflow.html"
+  ],
+  "decisions_confirmed": [
+    {
+      "question": "暂停热键选哪个",
+      "answer": "F9（RegisterHotKey + 自建消息循环，零新增依赖）",
+      "confirmed": "2026-10-29"
+    },
+    {
+      "question": "应用启动时语音输入默认开还是关",
+      "answer": "默认关；开过一次后记在 state.json，下次启动按上次状态恢复",
+      "confirmed": "2026-10-29"
+    }
+  ]
+}
