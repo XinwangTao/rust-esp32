@@ -2,8 +2,8 @@
   "schema": "archify-workflow-v3",
   "name": "mic-desktop-voice-typing",
   "title": "语音输入：把无线麦变成系统级麦克风（说话即上屏）",
-  "status": "implemented-2026-10-29c",
-  "source": "现有链路 tarot-esp32（采集→AEC→NS→VAD→BLE）、mic-desktop（解码→切句→转写）；新增 micapp/typer.py（SendInput Unicode）；Windows RegisterHotKey 做暂停热键；2026-10-29b 增加终端护栏、语音指令、Shift+F9；2026-10-29c 增加板载 BOOT 键开关（硬件已实测）",
+  "status": "implemented-2026-10-29d",
+  "source": "现有链路 tarot-esp32（采集→AEC→NS→VAD→BLE）、mic-desktop（解码→切句→转写）；新增 micapp/typer.py（SendInput Unicode）；Windows RegisterHotKey 做暂停热键；2026-10-29b 增加终端护栏、语音指令、Shift+F9；2026-10-29c 板载 BOOT 键；2026-10-29d 终端改配置判类名 + voice_input_allow_console 放行开关",
   "nodes": [
     {
       "id": "capture",
@@ -28,7 +28,7 @@
     {
       "id": "gate",
       "type": "process",
-      "label": "输入闸门：太短、纯噪声、重复、回读期间、前台是终端 → 丢弃不上屏"
+      "label": "输入闸门：太短、纯噪声、重复、回读期间、前台是终端（默认拦，可配置放行）→ 丢弃不上屏"
     },
     {
       "id": "voice-cmd",
@@ -148,7 +148,9 @@
     "readback_mutex": "语音输入开启即关闭自动回读；两者不同时生效",
     "out_of_scope": "语音命令（「换行」「删除」这类指令）、标点自动补全、多语言混输、手机端",
     "voice_cmd": "语音指令只认整句（normalize 后等于「回车」/「换行」），不做删除类指令，避免句子里的词被误当命令",
-    "不做": "标点自动补全、多语言混输、手机端、删除类语音指令"
+    "不做": "标点自动补全、多语言混输、手机端、删除类语音指令",
+    "console_rule": "终端判定只按窗口类名（conhost / CASCADIA_HOSTING_WINDOW_CLASS / mintty / PuTTY）；曾用「标题含管理员」兜底，把群聊/文档窗口误当成终端，已删",
+    "console_allow": "voice_input_allow_console=true 时终端与普通窗口完全一致：文字、回车都生效。代价是终端里一句误识别的「回车」会直接执行那行命令，由用户自行承担"
   },
   "verification": [
     {
@@ -220,6 +222,16 @@
       "item": "板载 BOOT 键端到端",
       "status": "已验证",
       "evidence": "实按 BOOT：板子发 VI 帧，PC 端 on_control 收到 voice_toggle；STAT key 计数随按下递增"
+    },
+    {
+      "item": "终端放行开关",
+      "status": "已验证（单测）",
+      "evidence": "allow_console=True：终端窗口内文字照常注入；说「回车」同样按一次 Enter。全套 34/34。首版曾禁终端回车（enter_blocked），按用户要求取消"
+    },
+    {
+      "item": "误拦根因",
+      "status": "已验证",
+      "evidence": "用户实机：日志 risky target cls='CASCADIA_HOSTING_WINDOW_CLASS'，且此前误拦来自标题里含「管理员」的普通窗口"
     }
   ],
   "references": [

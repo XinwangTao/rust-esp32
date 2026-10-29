@@ -12,7 +12,7 @@
 <body>
 <main>
 <h1>语音输入：把无线麦变成系统级麦克风（说话即上屏）</h1>
-<p>Archify workflow · 状态：<strong>已实现 · 2026-10-29c 已验证</strong>（终端护栏、语音指令、Shift+F9、板载 BOOT 键） · 目的：这块板子最基础的用途是「无线麦克风」——说出来，字就落在你正在用的那个程序里，而不是只落在本应用的聊天窗口</p>
+<p>Archify workflow · 状态：<strong>已实现 · 2026-10-29d 已验证</strong>（终端判定只认类名 + voice_input_allow_console 放行开关） · 目的：这块板子最基础的用途是「无线麦克风」——说出来，字就落在你正在用的那个程序里，而不是只落在本应用的聊天窗口</p>
 <div class="meta"><span class="tag">L2 新集成边界</span><span class="tag">常开，说话即输入</span><span class="tag">模拟键盘逐字注入</span><span class="tag">输入模式下关回读</span><span class="tag">零新增依赖</span></div>
 <div class="legend"><span class="l-system">系统/已有</span><span class="l-process">处理</span><span class="l-manual">人工开关</span><span class="l-fail">失败/兜底出口</span></div>
 <section class="flow" aria-label="语音输入主流程">
@@ -35,7 +35,7 @@
 <div class="failure"><strong>转写服务不可用</strong>本地容器没起或云端不通：状态行报具体原因和命令，这一句不上屏——宁可缺一句，也不要把噪声打进别人的输入框。</div>
 <div class="failure"><strong>常开误触发</strong>咳嗽、电视、别人说话被切成句子：0.6 秒 + 2 字 + 刹车三道闸拦；仍挡不住就按 F9 暂停，按钮变黄提示已暂停。</div>
 <div class="note"><b>为什么用 BOOT 键</b>：DevKitM-1 只有 BOOT(GPIO0) 和 RST(EN) 两个键，RST 一按就重启，只剩 BOOT 可用。运行期按 BOOT 不会进下载模式——只有复位瞬间按住才会。固件里 20 ms 轮询 + 两次采样去抖，按住 40 ms 才算一次，BLE 未连接时不发（不污染丢包计数）。</div>
-<div class="failure"><strong>前台是终端</strong>conhost / Windows Terminal / mintty / PuTTY / 管理员控制台：一个字符都不注入，只在状态行说明。误识别一句话在终端里就是半条命令。已知局限：VS Code、JetBrains 的内置终端类名与主窗口相同，识别不出来。</div>
+<div class="failure"><strong>前台是终端</strong>只按窗口类名判 conhost / Windows Terminal / mintty / PuTTY：默认一个字符都不注入。误识别一句话在终端里就是半条命令。<b>已知局限</b>：VS Code、JetBrains 的内置终端类名与主窗口相同，识别不出来。<b>放行开关</b>：<code>voice_input_allow_console=true</code> 后终端与普通窗口完全一致，文字与「回车」都生效。代价：终端里一句误识别的「回车」会直接执行那行命令。</div>
 <div class="failure"><strong>前台就是本应用</strong>说话时焦点在自己窗口：不上屏，只显示在聊天区，避免把字打进自己的输入框。</div>
 <div class="failure"><strong>目标程序权限更高</strong>对方是管理员进程（UAC 隔离），<code>SendInput</code> 无效：文字复制到剪贴板并提示，用户手动 Ctrl+V 兜底。</div>
 <div class="failure"><strong>开会 / 不想被输入</strong>热键一键暂停，恢复同样一键；暂停时转写照常、聊天区照常记，只是不上屏。</div>
@@ -53,6 +53,8 @@
 <li><b>已验证（单测）</b> 终端护栏与回车指令：risky 分支、类名判定、注入后末尾多一个换行，共 30/30。</li>
 <li><b>已验证</b> F9 与 Shift+F9 同进程注册各命中一次；错误文字不再走 on_result（讯飞失败路径改报丢弃，否则会被当人话打出去）。</li>
 <li><b>已验证</b> 转写失败/空结果会报 on_drop，时长队列不再错位。</li>
+<li><b>已验证（单测 34/34）</b> 终端放行开关：类名判定命中时不注入；放行后文字照打、「回车」同样按一次 Enter（首版曾禁用终端回车，按用户要求取消）。</li>
+<li><b>已验证</b> 误拦根因：日志 risky target cls='CASCADIA_HOSTING_WINDOW_CLASS'；另一处误拦来自「标题含管理员」的普通窗口，已删除该规则。</li>
 <li><b>已验证（端到端）</b> 实按 BOOT：板子发 <code>VI</code> 帧，PC 端收到 <code>voice_toggle</code>，链路通。</li>
 <li><b>已验证（硬件）</b> BOOT 键=GPIO0：<code>GPIO?</code> 探测 16 Hz 采样，第 5.3 秒 GPIO0 变 0，其余 13 脚不变；PC 端解析 <code>VI</code> 帧的单测通过，<code>STAT</code> 新增 <code>key=N</code> 计数。</li>
 <li><b>部分验证</b> 环境音误触发：闸门单测覆盖 too_short / too_few / brake，真实环境误触发率待长时间使用观察。</li>
