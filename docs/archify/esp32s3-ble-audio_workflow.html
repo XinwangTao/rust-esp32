@@ -65,7 +65,8 @@
 <li><b>延迟（已验证）</b>：PING/PONG 30/30 收到，RTT 最小 4.2 / 中位 <b>21.4</b> / p95 84.6 / 最大 90.4 ms，单向链路约 10.7 ms。RTT 含音频包排队，所以明显大于 15 ms 连接间隔。</li>
 <li><b>修正四 · PING 无回包</b>：板子把整条命令回显成 <code>PONG</code>（非 NUL 结尾的 <code>buf</code> 直接 <code>%s</code>），token 错位成 <code>"PING"</code>，PC 永远匹配不上；改为跳过前缀并拷进带终止符的缓冲。</li>
 <li><b>修正五 · RTT 被量化</b>：Windows 上 <code>time.monotonic()</code> 精度约 15.6 ms，量出 0/16/31 的假分布；换 <code>perf_counter</code> 才得到 4.2~90.4 ms 的真实分布。</li>
-<li><b>未验证</b>：BLE 模式下 STT 引擎对 ADPCM 窄带音质的实际转写准确率（已人工听通，未做字准率对照）。</li>
+<li><b>ADPCM 对转写的影响（已验证）</b>：6 句已知文本 × 干净 / 加噪 SNR 20 dB 两种条件，原 PCM 与 ADPCM 往返各转写一次，<b>12 次结果全部逐字相同</b>（连「三点→3点」这种数字归一化差异都一致），平均字错率 10.6% 对 10.6% —— 4:1 压缩在转写上看不出代价。</li>
+<li><b>边界</b>：上一条用的是 SAPI 合成音 + 人工白噪，只能证明「压缩本身不掉字」，不能替代真人 / 真实房间的样本；真人效果仍需实机说话验证。</li>
 </ul></section>
 <section class="section"><strong>验收标准</strong><ul><li>板子上电后 PC 能扫到并连上，20 秒内开始收到音频。</li><li>上行稳定 <b>50 帧/秒</b>，连续 60 秒丢帧 < 1%。</li><li>转写结果与 Wi-Fi 模式下同等可读（同一句话对比）。</li><li>拔掉板子电源再上电，PC 自动重连并恢复收音频。</li><li>端到端延迟与 Wi-Fi 模式相比不劣化超过 100 ms。</li></ul></section>
 </main>
