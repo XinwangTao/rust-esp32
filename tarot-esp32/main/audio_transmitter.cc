@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "audio_aec.h"
+#include "audio_ble.h"
 #include "audio_ns.h"
 #include "audio_vad.h"
 #include "audio_speaker.h"
@@ -90,9 +91,14 @@ void capture_task(void *) {
 void send_task(void *) {
     AudioFrame frame{};
     while (xQueueReceive(frame_queue, &frame, portMAX_DELAY) == pdTRUE) {
+#ifdef AUDIO_LINK_BLE
+        // BLE 模式：ADPCM 压缩后走 GATT 通知。未连接时 audio_ble_send 内部直接丢弃并计数。
+        audio_ble_send(frame.samples.data(), SAMPLES_PER_FRAME, frame.flags);
+#else
         rust_udp_send_audio(reinterpret_cast<const uint8_t *>(frame.samples.data()),
                             sizeof(frame.samples), frame.sequence, SAMPLE_RATE,
                             SAMPLES_PER_FRAME, frame.flags);
+#endif
     }
 }
 
@@ -109,7 +115,16 @@ void configure_keys() {
 
 extern "C" esp_err_t audio_transmitter_start(void) {
     configure_keys();
+#ifdef AUDIO_LINK_BLE
+    // BLE 模式不开 Wi-Fi：两者共用射频，同时开会互相抢，丢帧原因就查不清了。
+    // 状态查询改走 BLE 的 RX 特征（写 "STAT"）。
+    if (!audio_ble_start()) {
+        ESP_LOGW(TAG, "BLE start failed, falling back to Wi-Fi UDP");
+        rust_audio_network_start();
+    }
+#else
     rust_audio_network_start();
+#endif
 
     i2s_chan_config_t channel_config = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     channel_config.auto_clear_after_cb = true;
@@ -155,6 +170,12 @@ extern "C" esp_err_t audio_transmitter_start(void) {
     ESP_LOGI(TAG, "INMP441 RX started: rate=%u pins=%d/%d/%d",
              static_cast<unsigned>(SAMPLE_RATE), static_cast<int>(PIN_I2S_SCK),
              static_cast<int>(PIN_I2S_WS), static_cast<int>(PIN_I2S_SD));
+#ifdef AUDIO_LINK_BLE
+    // BLE 模式没有网络栈（Wi-Fi 没起），speaker 的 UDP 下行监听会调 lwIP
+    // 然后断言 "Invalid mbox" 并无限重启。下行 TTS 本轮不在范围内，直接不启动。
+    ESP_LOGI(TAG, "BLE mode: speaker downlink disabled");
+#else
     speaker_start();  // 失败仅告警，不影响上行
+#endif
     return ESP_OK;
 }
