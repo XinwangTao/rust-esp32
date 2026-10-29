@@ -22,6 +22,26 @@
 
 扬声器三根信号线的顺序不是按排针顺序排列的：GPIO7 是**数据**（DIN），15/16 才是时钟。这是 2026-10-28 在实机上用「发 PIN 控制帧逐个排列试 + 咪头回采」定出来的结论，`main/CMakeLists.txt` 的默认值即由此固定。原先把 GPIO7 当按键输入，已让位给扬声器。
 
+## 内存与 PSRAM（2026-10-29 实测）
+
+esptool 读芯片特征时报告：`Chip is ESP32-S3 (QFN56) (revision v0.2)` /
+`Features: WiFi, BLE, Embedded PSRAM 8MB (AP_3v3)` / 16MB Flash
+—— 即 **封装内 8MB PSRAM 是真实存在的**（对应 WROOM-1-N16R8 级别模组）。
+
+但当前固件 `sdkconfig.audio-s3` 里**没有开 `CONFIG_SPIRAM`**，所以 PSRAM 一直闲置。
+这一点直接影响设备端回声消除的可行性：esp-sr 的 AEC 需要 64–126 KB PSRAM
+（官方资源表，ESP32-P4 @240MHz 实测），开 PSRAM 后才有条件上。
+详见 `docs/research/2026-10-29-audio-pipeline-research.md`。
+
+## 串口与复位（2026-10-29 实测）
+
+板子插的是原生 USB（USB-Serial/JTAG，设备名「USB 串行设备 (COM4)」），不是 UART 桥。
+排查中遇到：烧录成功且 `verify_flash` 三处全过，但每次复位都停在
+`rst:0x15 (USB_UART_CHIP_RESET),boot:0x1 (DOWNLOAD(USB/UART0))`，
+DTR/RTS 的三种时序（含 esptool `USBJTAGSerialReset` 原样时序）都无法让它进应用。
+ROM 报 `boot:0x1` 说明**复位瞬间 GPIO0 是低电平**（GPIO0 就是 BOOT 脚）。
+遇到这种情况先确认 BOOT 键没被按住/没被外部拉低，再按一次 RST。
+
 ## Audio format
 
 - I2S master receive, Philips mode.
