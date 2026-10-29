@@ -12,7 +12,7 @@
 <body>
 <main>
 <h1>语音输入：把无线麦变成系统级麦克风（说话即上屏）</h1>
-<p>Archify workflow · 状态：<strong>已实现 · 2026-10-29 已验证</strong> · 目的：这块板子最基础的用途是「无线麦克风」——说出来，字就落在你正在用的那个程序里，而不是只落在本应用的聊天窗口</p>
+<p>Archify workflow · 状态：<strong>已实现 · 2026-10-29c 已验证</strong>（终端护栏、语音指令、Shift+F9、板载 BOOT 键） · 目的：这块板子最基础的用途是「无线麦克风」——说出来，字就落在你正在用的那个程序里，而不是只落在本应用的聊天窗口</p>
 <div class="meta"><span class="tag">L2 新集成边界</span><span class="tag">常开，说话即输入</span><span class="tag">模拟键盘逐字注入</span><span class="tag">输入模式下关回读</span><span class="tag">零新增依赖</span></div>
 <div class="legend"><span class="l-system">系统/已有</span><span class="l-process">处理</span><span class="l-manual">人工开关</span><span class="l-fail">失败/兜底出口</span></div>
 <section class="flow" aria-label="语音输入主流程">
@@ -21,11 +21,12 @@
 <div class="node system">BLE 上行<br>ADPCM 解码<br><b>已有</b><span class="arrow"></span></div>
 <div class="node process">切句<br>设备端 VAD 优先<br>无结论回退阈值<span class="arrow"></span></div>
 <div class="node process">转写<br>本地 Whisper / 讯飞<br><b>已有，可切</b><span class="arrow"></span></div>
-<div class="node process">输入闸门<br>太短 / 纯噪声<br>重复 / 回读期间<span class="arrow"></span></div>
+<div class="node process">输入闸门<br>太短 / 纯噪声 / 重复<br>回读期间 / 前台是终端<span class="arrow"></span></div>
+<div class="node process">语音指令<br>整句「回车」「换行」<br>→ 按一次 Enter<span class="arrow"></span></div>
 <div class="node process">打字注入<br><code>SendInput</code> Unicode<br>不抢焦点</div>
 </div>
 <div class="branch">
-<div class="node manual">总开关<br>界面 + 热键 <b>F9</b><br>暂停 / 恢复</div>
+<div class="node manual">总开关<br>界面 + <b>F9</b> 暂停/恢复<br><b>Shift+F9</b> 硬开关<br><b>板载 BOOT 键</b></div>
 <div class="node process">回读互斥<br>输入开启<br><b>自动关回读</b></div>
 <div class="note"><b>为什么「常开」要靠闸门而不是按键</b>：用户选择的是「说话即输入」，也就是不给人每次确认的机会——那风险就必须由系统兜。<b>三道闸</b>：①短于 0.6 秒的句子直接丢（咳嗽、键盘敲击、椅子响）；②转写结果少于 2 个有效字丢掉（噪声幻觉多是一两个字）；③连续 3 次且间隔 &lt; 2 秒触发刹车暂停（沿用自动回读那套逻辑，实测能挡住自激）。<br><b>为什么不用键盘钩子库</b>：<code>keyboard</code> / <code>pynput</code> 装的是全局钩子，安全软件会拦、也会拖慢全系统输入。注入只用 <code>SendInput</code>，热键只用 <code>RegisterHotKey</code>，都是 user32 自带能力，<code>ctypes</code> 直接调，零新依赖。<br><b>为什么注入不抢焦点</b>：用户正在微信里打字，这时候程序弹到前面把字打进自己窗口就废了。所以「说话结束时谁在前台，字就进谁」，全程不激活任何窗口。</div>
 </div>
@@ -33,20 +34,27 @@
 <div class="failures">
 <div class="failure"><strong>转写服务不可用</strong>本地容器没起或云端不通：状态行报具体原因和命令，这一句不上屏——宁可缺一句，也不要把噪声打进别人的输入框。</div>
 <div class="failure"><strong>常开误触发</strong>咳嗽、电视、别人说话被切成句子：0.6 秒 + 2 字 + 刹车三道闸拦；仍挡不住就按 F9 暂停，按钮变黄提示已暂停。</div>
+<div class="note"><b>为什么用 BOOT 键</b>：DevKitM-1 只有 BOOT(GPIO0) 和 RST(EN) 两个键，RST 一按就重启，只剩 BOOT 可用。运行期按 BOOT 不会进下载模式——只有复位瞬间按住才会。固件里 20 ms 轮询 + 两次采样去抖，按住 40 ms 才算一次，BLE 未连接时不发（不污染丢包计数）。</div>
+<div class="failure"><strong>前台是终端</strong>conhost / Windows Terminal / mintty / PuTTY / 管理员控制台：一个字符都不注入，只在状态行说明。误识别一句话在终端里就是半条命令。已知局限：VS Code、JetBrains 的内置终端类名与主窗口相同，识别不出来。</div>
 <div class="failure"><strong>前台就是本应用</strong>说话时焦点在自己窗口：不上屏，只显示在聊天区，避免把字打进自己的输入框。</div>
 <div class="failure"><strong>目标程序权限更高</strong>对方是管理员进程（UAC 隔离），<code>SendInput</code> 无效：文字复制到剪贴板并提示，用户手动 Ctrl+V 兜底。</div>
 <div class="failure"><strong>开会 / 不想被输入</strong>热键一键暂停，恢复同样一键；暂停时转写照常、聊天区照常记，只是不上屏。</div>
 <div class="failure"><strong>手动点朗读</strong>板子开始念：播放期间闸门关闭（等同临时暂停），播完自动恢复，念出来的话不会再被上屏一遍。</div>
 </div>
 </section>
-<section class="section"><strong>边界与约束</strong><ul><li><b>不改</b>：板子固件、BLE 链路、解码、切句、转写全部不动；只加「转写结果 → 系统输入」这一段。</li><li><b>零新增依赖</b>：<code>ctypes</code> 调 <code>user32.SendInput</code> / <code>RegisterHotKey</code>，不装 <code>keyboard</code> / <code>pynput</code> 这类全局钩子库。</li><li><b>不抢焦点</b>：注入时不激活任何窗口，目标是说话结束时的前台窗口。</li><li><b>回读互斥</b>：语音输入开启即关闭自动回读，两者不同时生效。</li><li>不做：语音命令（「换行」「删除」）、标点自动补全、多语言混输、手机端。</li></ul></section>
-<section class="section"><strong>已定（2026-10-29）</strong><ul><li>暂停热键：<b>F9</b>，RegisterHotKey + 自建消息循环，零新增依赖。</li><li>启动默认：<b>默认关</b>，开过一次后写入 <code>state.json</code>，下次启动按上次状态恢复。</li></ul></section>
+<section class="section"><strong>边界与约束</strong><ul><li><b>不改</b>：板子固件、BLE 链路、解码、切句、转写全部不动；只加「转写结果 → 系统输入」这一段。</li><li><b>零新增依赖</b>：<code>ctypes</code> 调 <code>user32.SendInput</code> / <code>RegisterHotKey</code>，不装 <code>keyboard</code> / <code>pynput</code> 这类全局钩子库。</li><li><b>不抢焦点</b>：注入时不激活任何窗口，目标是说话结束时的前台窗口。</li><li><b>回读互斥</b>：语音输入开启即关闭自动回读，两者不同时生效。</li><li><b>语音指令只认整句</b>：normalize 后等于「回车」或「换行」才按 Enter，「回车键不太好使」照常上屏；不做删除类指令。</li><li>不做：标点自动补全、多语言混输、手机端。</li></ul></section>
+<section class="section"><strong>已定（2026-10-29）</strong><ul><li>暂停热键：<b>F9</b>，RegisterHotKey + 自建消息循环，零新增依赖。</li><li>启动默认：<b>默认关</b>，开过一次后写入 <code>state.json</code>，下次启动按上次状态恢复。</li><li>开关热键：<b>F9</b> 暂停/恢复，<b>Shift+F9</b> 硬开关（同进程注册两个 id，互不影响）。</li><li>板载按键：<b>BOOT = GPIO0</b>，已实测（第 5.3 秒由 1 变 0）。固件去抖 40 ms 后经 BLE 发 <code>VI</code> 帧，PC 端等同按一次 Shift+F9；RST 是 EN 复位键不可用，J1-10/J1-11（key2/key3，GPIO8/9）是空排针可外接按键。</li></ul></section>
 <section class="section"><strong>实测结果</strong><ul>
 <li><b>已验证</b> 说话后目标程序出现简体中文、不抢焦点：用户实机测试通过；<code>test_voice_input.py</code> 21/21（真注入 QLineEdit，20 字 / 112 ms）。</li>
 <li><b>已验证</b> F9 暂停/恢复：打包 EXE 上按 F9，按钮「语音输入 开」→「语音输入 暂停」，状态行同步；日志 <code>热键已注册 vk=0x78</code>，回调延迟 1 ms；热键被占用返回 err=1409 不崩。</li>
 <li><b>已验证</b> 开启后自动回读关闭；回读播放期间的那句话不上屏。</li>
 <li><b>已验证</b> 状态持久化：<code>state.json</code> 原子写，重启后与上次一致。</li>
 <li><b>已验证-否</b> 一次 SendInput 批量送多字不可靠：16 字一批时目标窗口只认每批首字（读回「你你你你…6666」），<code>type_text</code> 固定逐字送。</li>
+<li><b>已验证（单测）</b> 终端护栏与回车指令：risky 分支、类名判定、注入后末尾多一个换行，共 30/30。</li>
+<li><b>已验证</b> F9 与 Shift+F9 同进程注册各命中一次；错误文字不再走 on_result（讯飞失败路径改报丢弃，否则会被当人话打出去）。</li>
+<li><b>已验证</b> 转写失败/空结果会报 on_drop，时长队列不再错位。</li>
+<li><b>已验证（端到端）</b> 实按 BOOT：板子发 <code>VI</code> 帧，PC 端收到 <code>voice_toggle</code>，链路通。</li>
+<li><b>已验证（硬件）</b> BOOT 键=GPIO0：<code>GPIO?</code> 探测 16 Hz 采样，第 5.3 秒 GPIO0 变 0，其余 13 脚不变；PC 端解析 <code>VI</code> 帧的单测通过，<code>STAT</code> 新增 <code>key=N</code> 计数。</li>
 <li><b>部分验证</b> 环境音误触发：闸门单测覆盖 too_short / too_few / brake，真实环境误触发率待长时间使用观察。</li>
 </ul></section>
 </main>

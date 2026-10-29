@@ -2,8 +2,8 @@
   "schema": "archify-workflow-v3",
   "name": "mic-desktop-voice-typing",
   "title": "语音输入：把无线麦变成系统级麦克风（说话即上屏）",
-  "status": "implemented-2026-10-29",
-  "source": "现有链路 tarot-esp32（采集→AEC→NS→VAD→BLE）、mic-desktop（解码→切句→转写）；新增 micapp/typer.py（SendInput Unicode）；Windows RegisterHotKey 做暂停热键",
+  "status": "implemented-2026-10-29c",
+  "source": "现有链路 tarot-esp32（采集→AEC→NS→VAD→BLE）、mic-desktop（解码→切句→转写）；新增 micapp/typer.py（SendInput Unicode）；Windows RegisterHotKey 做暂停热键；2026-10-29b 增加终端护栏、语音指令、Shift+F9；2026-10-29c 增加板载 BOOT 键开关（硬件已实测）",
   "nodes": [
     {
       "id": "capture",
@@ -28,7 +28,12 @@
     {
       "id": "gate",
       "type": "process",
-      "label": "输入闸门：太短、纯噪声、与上一条重复、回读播放期间 → 丢弃不上屏"
+      "label": "输入闸门：太短、纯噪声、重复、回读期间、前台是终端 → 丢弃不上屏"
+    },
+    {
+      "id": "voice-cmd",
+      "type": "process",
+      "label": "语音指令：整句只有「回车」「换行」时按一次回车，其余照常逐字打字"
     },
     {
       "id": "inject",
@@ -38,12 +43,17 @@
     {
       "id": "switch",
       "type": "manual",
-      "label": "人工开关：界面总开关 + 全局热键暂停/恢复"
+      "label": "人工开关：界面总开关 + F9 暂停/恢复 + Shift+F9 硬开关 + 板载 BOOT 键（BLE 控制帧 VI）"
     },
     {
       "id": "loop-guard",
       "type": "process",
       "label": "回读互斥：语音输入开启时强制关闭自动回读"
+    },
+    {
+      "id": "board-key",
+      "type": "manual",
+      "label": "板载 BOOT 键（GPIO0，实测可用）：按下稳定 40 ms → BLE 发 VI 帧"
     }
   ],
   "edges": [
@@ -69,8 +79,13 @@
     },
     {
       "from": "gate",
-      "to": "inject",
+      "to": "voice-cmd",
       "label": "判定可以上屏"
+    },
+    {
+      "from": "voice-cmd",
+      "to": "inject",
+      "label": "普通文字逐字打字 / 回车指令按一次 Enter"
     },
     {
       "from": "switch",
@@ -81,6 +96,11 @@
       "from": "loop-guard",
       "to": "stt",
       "label": "回读关闭后，板子念的话不再进转写"
+    },
+    {
+      "from": "board-key",
+      "to": "switch",
+      "label": "VI 控制帧经 BLE 上送，PC 端等同于按一次 Shift+F9"
     }
   ],
   "failure_exits": [
@@ -113,6 +133,11 @@
       "from": "loop-guard",
       "condition": "用户手动点「朗读」按钮，板子开始念",
       "to": "播放期间闸门关闭（等同于临时暂停），播完自动恢复，避免念出来的话又被上屏一遍"
+    },
+    {
+      "from": "gate",
+      "condition": "前台是控制台/终端（conhost、Windows Terminal、mintty、PuTTY、管理员控制台）",
+      "to": "一个字符都不注入，只在状态行说明；防误识别变成半条命令。已知局限：VS Code/JetBrains 内置终端类名与主窗口相同，识别不出"
     }
   ],
   "constraints": {
@@ -121,7 +146,9 @@
     "always_on_risk": "常开是用户明确选择；风险靠三重闸门 + 暂停热键兜，而不是靠每次按键确认",
     "no_focus_steal": "注入时不激活任何窗口；目标永远是「说话结束时」的前台窗口",
     "readback_mutex": "语音输入开启即关闭自动回读；两者不同时生效",
-    "out_of_scope": "语音命令（「换行」「删除」这类指令）、标点自动补全、多语言混输、手机端"
+    "out_of_scope": "语音命令（「换行」「删除」这类指令）、标点自动补全、多语言混输、手机端",
+    "voice_cmd": "语音指令只认整句（normalize 后等于「回车」/「换行」），不做删除类指令，避免句子里的词被误当命令",
+    "不做": "标点自动补全、多语言混输、手机端、删除类语音指令"
   },
   "verification": [
     {
@@ -158,6 +185,41 @@
       "item": "一次 SendInput 批量送多字是否可靠",
       "status": "已验证-否",
       "evidence": "16 字一批时目标窗口只认每批首字（读回 你你你你…6666）；改逐字送后完全正确，故 type_text 固定逐字"
+    },
+    {
+      "item": "终端护栏",
+      "status": "已验证（单测）",
+      "evidence": "test_voice_input.py 覆盖 risky 分支与类名判定（conhost / Windows Terminal / 管理员标题）；真实终端未手动试过"
+    },
+    {
+      "item": "说「回车」真的按回车",
+      "status": "已验证（单测）",
+      "evidence": "QPlainTextEdit 注入后文本末尾多一个换行；「回车键不太好使」仍按普通句子打字"
+    },
+    {
+      "item": "两个热键同进程共存",
+      "status": "已验证",
+      "evidence": "F9 与 Shift+F9 各自注册成功（hk_id 1/2），模拟按键各命中一次；被占用返回 err=1409 不影响另一个"
+    },
+    {
+      "item": "转写失败不再让时长错位",
+      "status": "已验证",
+      "evidence": "on_drop 回调：服务不可用 2 句 → drops=[1,2]；真实容器喂静音 → 空结果同样各报一次"
+    },
+    {
+      "item": "BOOT 键落在 GPIO0",
+      "status": "已验证（硬件）",
+      "evidence": "GPIO? 探测 16 Hz 采样，第 5.3 秒 GPIO0=0，其余 13 脚不变"
+    },
+    {
+      "item": "PC 端解析 VI 控制帧",
+      "status": "已验证（单测）",
+      "evidence": "喂 notify 数据 VI\n → on_control('voice_toggle')；STAT 新增 key=N 计数"
+    },
+    {
+      "item": "板载 BOOT 键端到端",
+      "status": "已验证",
+      "evidence": "实按 BOOT：板子发 VI 帧，PC 端 on_control 收到 voice_toggle；STAT key 计数随按下递增"
     }
   ],
   "references": [
@@ -173,6 +235,11 @@
     {
       "question": "应用启动时语音输入默认开还是关",
       "answer": "默认关；开过一次后记在 state.json，下次启动按上次状态恢复",
+      "confirmed": "2026-10-29"
+    },
+    {
+      "question": "板子上有没有可用的实体按键来开关语音输入",
+      "answer": "有。DevKitM-1 的 BOOT 键就是 GPIO0：固件加只读 GPIO? 探测帧后，用户实按，第 5.3 秒 GPIO0 由 1 变 0，其余 13 个候选脚恒为 1。RST 是 EN 复位键不可用；J1-10/J1-11（key2/key3，GPIO8/9）是空排针，可外接按键但暂无按键。",
       "confirmed": "2026-10-29"
     }
   ]

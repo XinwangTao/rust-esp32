@@ -4,6 +4,9 @@
 #include <cstring>
 
 #include "audio_ns.h"
+#include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "audio_speaker.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -33,6 +36,7 @@ volatile uint32_t s_sent = 0;
 // 发送失败才是链路/缓冲问题。混在一起看会误判成严重丢包。
 volatile uint32_t s_drop_nolink = 0;
 volatile uint32_t s_drop_fail = 0;
+volatile uint32_t s_key_presses = 0;   // BOOT 键按下次数，写进 STAT 供 PC 端核对
 volatile uint32_t s_rx_frames = 0;   // 下行收到的 TTS 帧数
 
 
@@ -159,12 +163,52 @@ void reply_status() {
     char text[192];
     const int n = snprintf(text, sizeof(text),
                            "STAT ble=on mtu=%u conn=%d sub=%d sent=%u drop_nolink=%u "
-                           "drop_fail=%u rx=%u\n",
+                           "drop_fail=%u rx=%u key=%u\n",
                            static_cast<unsigned>(s_mtu), s_conn == BLE_HS_CONN_HANDLE_NONE ? 0 : 1,
                            s_subscribed ? 1 : 0, static_cast<unsigned>(s_sent),
                            static_cast<unsigned>(s_drop_nolink), static_cast<unsigned>(s_drop_fail),
-                           static_cast<unsigned>(s_rx_frames));
+                           static_cast<unsigned>(s_rx_frames), static_cast<unsigned>(s_key_presses));
     if (n > 0) send_flat(reinterpret_cast<const uint8_t *>(text), static_cast<size_t>(n));
+}
+
+// 板载 BOOT 键（GPIO0）当实体开关：按下并稳定 40 ms 就通过 BLE 发一条 VI 帧，
+// PC 端收到后切换语音输入。运行期按 BOOT 不会进下载模式，只有复位瞬间按住才会。
+constexpr gpio_num_t kBootKey = GPIO_NUM_0;
+
+void send_vi() {
+    if (s_conn == BLE_HS_CONN_HANDLE_NONE || !s_subscribed) return;
+    static const uint8_t kMsg[3] = {'V', 'I', 10};   // 三个字节：V I 换行
+    send_flat(kMsg, sizeof(kMsg));
+}
+
+void boot_key_task(void *) {
+    gpio_config_t io = {};
+    io.pin_bit_mask = 1ULL << static_cast<int>(kBootKey);
+    io.mode = GPIO_MODE_INPUT;
+    io.pull_up_en = GPIO_PULLUP_ENABLE;
+    io.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io.intr_type = GPIO_INTR_DISABLE;
+    gpio_config(&io);
+
+    int stable = 1;    // 上拉，未按下 = 1
+    int cnt = 0;
+    while (true) {
+        const int lv = gpio_get_level(kBootKey);
+        if (lv != stable) {
+            if (++cnt >= 2) {          // 2 x 20 ms 去抖
+                stable = lv;
+                cnt = 0;
+                if (lv == 0) {
+                    ++s_key_presses;
+                    ESP_LOGI(TAG, "boot key pressed (total %u)", static_cast<unsigned>(s_key_presses));
+                    send_vi();
+                }
+            }
+        } else {
+            cnt = 0;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
 }
 
 int gatt_access(uint16_t, uint16_t, struct ble_gatt_access_ctxt *ctxt, void *) {
@@ -201,6 +245,38 @@ int gatt_access(uint16_t, uint16_t, struct ble_gatt_access_ctxt *ctxt, void *) {
         uint8_t ack[16];
         const int n = snprintf(reinterpret_cast<char *>(ack), sizeof(ack), "NS %s", on ? "on" : "off");
         if (n > 0) send_flat(ack, static_cast<size_t>(n));
+    } else if (len >= 5 && std::memcmp(buf, "GPIO?", 5) == 0) {
+        // 诊断用：把候选引脚按「输入 + 上拉」读一遍，用来确认板子上到底有没有
+        // 实体按键、接在哪只脚。只读，不改任何已用引脚的功能；确认后这条分支可以留着。
+        static bool configured = false;
+        static constexpr gpio_num_t kPins[] = {
+            GPIO_NUM_0,  GPIO_NUM_1,  GPIO_NUM_2,  GPIO_NUM_3,  GPIO_NUM_8,  GPIO_NUM_9,
+            GPIO_NUM_10, GPIO_NUM_11, GPIO_NUM_12, GPIO_NUM_13, GPIO_NUM_14, GPIO_NUM_17,
+            GPIO_NUM_18, GPIO_NUM_21,
+        };
+        if (!configured) {
+            for (gpio_num_t pin : kPins) {
+                gpio_config_t io = {};
+                io.pin_bit_mask = 1ULL << static_cast<int>(pin);
+                io.mode = GPIO_MODE_INPUT;
+                io.pull_up_en = GPIO_PULLUP_ENABLE;
+                io.pull_down_en = GPIO_PULLDOWN_DISABLE;
+                io.intr_type = GPIO_INTR_DISABLE;
+                gpio_config(&io);
+            }
+            configured = true;
+        }
+        char text[160];
+        int n = snprintf(text, sizeof(text), "GPIO");
+        for (gpio_num_t pin : kPins) {
+            if (n <= 0 || n >= static_cast<int>(sizeof(text)) - 10) break;
+            n += snprintf(text + n, sizeof(text) - n, " %d=%d", static_cast<int>(pin),
+                          gpio_get_level(pin));
+        }
+        if (n > 0) {
+            n += snprintf(text + n, sizeof(text) - n, "\n");
+            send_flat(reinterpret_cast<const uint8_t *>(text), static_cast<size_t>(n));
+        }
     } else if (len >= 4 && std::memcmp(buf, "PING", 4) == 0) {
         // 只回显 token（跳过 "PING " 前缀）。注意 buf 不是以 0 结尾的，
         // 直接 %s 会读到越界垃圾，所以先拷进带终止符的缓冲。
@@ -361,6 +437,7 @@ extern "C" bool audio_ble_start(void) {
     }
 
     nimble_port_freertos_init(host_task);
+    xTaskCreate(boot_key_task, "boot_key", 3072, nullptr, 4, nullptr);
     ESP_LOGI(TAG, "nimble started");
     return true;
 }
