@@ -45,7 +45,7 @@
 <div class="failure"><strong>Wi-Fi 与 BLE 共存抖动</strong>两者共用射频会互相抢：做成<b>二选一模式</b>（配置决定），不同时开，避免排查不清的丢帧。</div>
 <div class="failure"><strong>PC 没有可用蓝牙</strong>适配器不支持/驱动缺失：<code>input_mode</code> 切回 <code>udp</code>，原有 Wi-Fi 链路功能不退化。</div>
 <div class="failure"><strong>下行播报时链路已断</strong>写特征失败/连接已掉：Speaker 直接报「下发失败：链路已断开」，不阻塞转写主流程；板子侧 <code>drop_fail</code> 单独计数（实测 0），不与「没连 PC 的空跑丢弃」混在一起。</div>
-<div class="failure"><strong>下行自激（扬声器被自己采回）</strong>I2S 写之前把同一帧喂 AEC 参考通道。实测下行 2 秒提示音期间上行仍 50.1 包/秒、丢帧 0——放音没把上行挤掉。</div>
+<div class="failure"><strong>下行自激（扬声器被自己采回）</strong>I2S 写之前把同一帧喂 AEC 参考通道。实测让板子念 6.2 秒 TTS、同时录下整段上行送讯飞，转出的是「谢谢我的生活」这类噪声幻觉，<b>原句一个字都没复现</b>；放音期间上行仍是 50.1 包/秒、丢帧 0。</div>
 </div>
 </section>
 <section class="section"><strong>边界与约束</strong><ul><li>板端：开 <code>CONFIG_BT_ENABLED</code> + NimBLE；新增 <code>main/audio_ble.cc/.h</code>（GATT 服务 + ADPCM 编解码 + 双向收发）；<code>audio_transmitter.cc</code> 把帧交给 BLE 而不是 UDP；<code>audio_speaker.cc</code> 拆出 <code>speaker_init_hw</code> / <code>speaker_start_i2s_only</code> / <code>speaker_write</code>，BLE 模式不建 UDP 下行任务。</li><li>PC 端：新增 <code>micapp/ble_receiver.py</code>（与 <code>UdpReceiver</code> 同接口）、<code>micapp/adpcm.py</code>（编解码）；<code>config.json</code> 加 <code>input_mode</code>；<code>tts.Speaker</code> 加 BLE 通道。</li><li><b>不改</b>：采集、AEC、NS、VAD、切句、转写、回读策略、落盘一条都不动——BLE 只替换「音频怎么到 PC」这一段。</li><li><code>AUDIO_LINK=udp|ble</code> 写在 <code>audio.env</code> 里，避免换了终端就编出另一种链路。</li><li>参照 IDF 自带示例：<code>ble_spp</code>（自定义传输）、<code>ble_phy</code>（2M PHY）、<code>bleprph_wifi_coex</code>（共存）。</li><li>不做：手机 App、BLE 配对加密绑定、LE Audio/LC3（S3 在 IDF 5.3 不支持）、多板同时连接。</li></ul></section>
@@ -66,7 +66,9 @@
 <li><b>修正四 · PING 无回包</b>：板子把整条命令回显成 <code>PONG</code>（非 NUL 结尾的 <code>buf</code> 直接 <code>%s</code>），token 错位成 <code>"PING"</code>，PC 永远匹配不上；改为跳过前缀并拷进带终止符的缓冲。</li>
 <li><b>修正五 · RTT 被量化</b>：Windows 上 <code>time.monotonic()</code> 精度约 15.6 ms，量出 0/16/31 的假分布；换 <code>perf_counter</code> 才得到 4.2~90.4 ms 的真实分布。</li>
 <li><b>ADPCM 对转写的影响（已验证）</b>：6 句已知文本 × 干净 / 加噪 SNR 20 dB 两种条件，原 PCM 与 ADPCM 往返各转写一次，<b>12 次结果全部逐字相同</b>（连「三点→3点」这种数字归一化差异都一致），平均字错率 10.6% 对 10.6% —— 4:1 压缩在转写上看不出代价。</li>
-<li><b>边界</b>：上一条用的是 SAPI 合成音 + 人工白噪，只能证明「压缩本身不掉字」，不能替代真人 / 真实房间的样本；真人效果仍需实机说话验证。</li>
+<li><b>自激验证（已验证）</b>：让板子念 6.2 秒 TTS，同时录下整段上行再送去讯飞 —— 转出「谢谢我的生活。」这类噪声幻觉，<b>原句一个字都没复现</b>，AEC 把播报消干净了。</li>
+<li><b>自激余量（值得注意）</b>：放音期间上行 RMS 从 22.7 涨到 62.3，但提示音 880 Hz 分量反而降到基线的 0.2 倍、1320 Hz 仅 5e-5，说明涨的是宽频机械噪声不是内容。不过 62.3 与当前阈值 63 只差不到 1，底噪很低的房间里播报残响有可能擦线切出一句噪声——Readback 的去重与刹车会挡掉，代价只是一次白转写。</li>
+<li><b>边界</b>：ADPCM 与自激两条用的是 SAPI 合成音 + 人工白噪，只能证明「压缩本身不掉字」「播报不会被原样采回」，不能替代真人 / 真实房间的样本。</li>
 </ul></section>
 <section class="section"><strong>验收标准</strong><ul><li>板子上电后 PC 能扫到并连上，20 秒内开始收到音频。</li><li>上行稳定 <b>50 帧/秒</b>，连续 60 秒丢帧 < 1%。</li><li>转写结果与 Wi-Fi 模式下同等可读（同一句话对比）。</li><li>拔掉板子电源再上电，PC 自动重连并恢复收音频。</li><li>端到端延迟与 Wi-Fi 模式相比不劣化超过 100 ms。</li></ul></section>
 </main>
