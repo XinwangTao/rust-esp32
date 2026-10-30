@@ -12,7 +12,7 @@
 <body>
 <main>
 <h1>语音输入：把无线麦变成系统级麦克风（说话即上屏）</h1>
-<p>Archify workflow · 状态：<strong>已实现 · 2026-10-29d 已验证</strong>（终端判定只认类名 + voice_input_allow_console 放行开关） · 目的：这块板子最基础的用途是「无线麦克风」——说出来，字就落在你正在用的那个程序里，而不是只落在本应用的聊天窗口</p>
+<p>Archify workflow · 状态：<strong>已实现 · 2026-10-29e</strong>（BOOT 短按回车 / 长按切开关、回车词表补近音、语音「清除」） · 目的：这块板子最基础的用途是「无线麦克风」——说出来，字就落在你正在用的那个程序里，而不是只落在本应用的聊天窗口</p>
 <div class="meta"><span class="tag">L2 新集成边界</span><span class="tag">常开，说话即输入</span><span class="tag">模拟键盘逐字注入</span><span class="tag">输入模式下关回读</span><span class="tag">零新增依赖</span></div>
 <div class="legend"><span class="l-system">系统/已有</span><span class="l-process">处理</span><span class="l-manual">人工开关</span><span class="l-fail">失败/兜底出口</span></div>
 <section class="flow" aria-label="语音输入主流程">
@@ -22,7 +22,7 @@
 <div class="node process">切句<br>设备端 VAD 优先<br>无结论回退阈值<span class="arrow"></span></div>
 <div class="node process">转写<br>本地 Whisper / 讯飞<br><b>已有，可切</b><span class="arrow"></span></div>
 <div class="node process">输入闸门<br>太短 / 纯噪声 / 重复<br>回读期间 / 前台是终端<span class="arrow"></span></div>
-<div class="node process">语音指令<br>整句「回车」「换行」<br>→ 按一次 Enter<span class="arrow"></span></div>
+<div class="node process">语音指令<br>「回车」「换行」→ Enter<br>「清除」「清空」→ 退格删刚输入<span class="arrow"></span></div>
 <div class="node process">打字注入<br><code>SendInput</code> Unicode<br>不抢焦点</div>
 </div>
 <div class="branch">
@@ -42,8 +42,8 @@
 <div class="failure"><strong>手动点朗读</strong>板子开始念：播放期间闸门关闭（等同临时暂停），播完自动恢复，念出来的话不会再被上屏一遍。</div>
 </div>
 </section>
-<section class="section"><strong>边界与约束</strong><ul><li><b>不改</b>：板子固件、BLE 链路、解码、切句、转写全部不动；只加「转写结果 → 系统输入」这一段。</li><li><b>零新增依赖</b>：<code>ctypes</code> 调 <code>user32.SendInput</code> / <code>RegisterHotKey</code>，不装 <code>keyboard</code> / <code>pynput</code> 这类全局钩子库。</li><li><b>不抢焦点</b>：注入时不激活任何窗口，目标是说话结束时的前台窗口。</li><li><b>回读互斥</b>：语音输入开启即关闭自动回读，两者不同时生效。</li><li><b>语音指令只认整句</b>：normalize 后等于「回车」或「换行」才按 Enter，「回车键不太好使」照常上屏；不做删除类指令。</li><li>不做：标点自动补全、多语言混输、手机端。</li></ul></section>
-<section class="section"><strong>已定（2026-10-29）</strong><ul><li>暂停热键：<b>F9</b>，RegisterHotKey + 自建消息循环，零新增依赖。</li><li>启动默认：<b>默认关</b>，开过一次后写入 <code>state.json</code>，下次启动按上次状态恢复。</li><li>开关热键：<b>F9</b> 暂停/恢复，<b>Shift+F9</b> 硬开关（同进程注册两个 id，互不影响）。</li><li>板载按键：<b>BOOT = GPIO0</b>，已实测（第 5.3 秒由 1 变 0）。固件去抖 40 ms 后经 BLE 发 <code>VI</code> 帧，PC 端等同按一次 Shift+F9；RST 是 EN 复位键不可用，J1-10/J1-11（key2/key3，GPIO8/9）是空排针可外接按键。</li></ul></section>
+<section class="section"><strong>边界与约束</strong><ul><li><b>不改</b>：板子固件、BLE 链路、解码、切句、转写全部不动；只加「转写结果 → 系统输入」这一段。</li><li><b>零新增依赖</b>：<code>ctypes</code> 调 <code>user32.SendInput</code> / <code>RegisterHotKey</code>，不装 <code>keyboard</code> / <code>pynput</code> 这类全局钩子库。</li><li><b>不抢焦点</b>：注入时不激活任何窗口，目标是说话结束时的前台窗口。</li><li><b>回读互斥</b>：语音输入开启即关闭自动回读，两者不同时生效。</li><li><b>清除只删语音打的字</b>：记账字数 + 记窗口句柄，换过窗口不删；单次上限 4000 字；指令词不参与去重（连说两次「回车」= 两次回车）。</li><li><b>语音指令只认整句</b>：normalize 后等于「回车」或「换行」才按 Enter，「回车键不太好使」照常上屏；不做删除类指令。</li><li>不做：标点自动补全、多语言混输、手机端。</li></ul></section>
+<section class="section"><strong>已定（2026-10-29）</strong><ul><li>暂停热键：<b>F9</b>，RegisterHotKey + 自建消息循环，零新增依赖。</li><li>启动默认：<b>默认关</b>，开过一次后写入 <code>state.json</code>，下次启动按上次状态恢复。</li><li>开关热键：<b>F9</b> 暂停/恢复，<b>Shift+F9</b> 硬开关（同进程注册两个 id，互不影响）。</li><li>板载按键：<b>BOOT = GPIO0</b>，<b>短按 = 回车</b>（发 <code>EN</code> 帧，直接按一次回车、不过闸门），<b>长按 3 秒 = 切换语音输入</b>（发 <code>VI</code> 帧，到点即触发）。RST 是 EN 复位脚，不能当输入；J1-10/J1-11（key2/key3，GPIO8/9）仍是空排针。</li></ul></section>
 <section class="section"><strong>实测结果</strong><ul>
 <li><b>已验证</b> 说话后目标程序出现简体中文、不抢焦点：用户实机测试通过；<code>test_voice_input.py</code> 21/21（真注入 QLineEdit，20 字 / 112 ms）。</li>
 <li><b>已验证</b> F9 暂停/恢复：打包 EXE 上按 F9，按钮「语音输入 开」→「语音输入 暂停」，状态行同步；日志 <code>热键已注册 vk=0x78</code>，回调延迟 1 ms；热键被占用返回 err=1409 不崩。</li>
@@ -53,7 +53,8 @@
 <li><b>已验证（单测）</b> 终端护栏与回车指令：risky 分支、类名判定、注入后末尾多一个换行，共 30/30。</li>
 <li><b>已验证</b> F9 与 Shift+F9 同进程注册各命中一次；错误文字不再走 on_result（讯飞失败路径改报丢弃，否则会被当人话打出去）。</li>
 <li><b>已验证</b> 转写失败/空结果会报 on_drop，时长队列不再错位。</li>
-<li><b>已验证（单测 34/34）</b> 终端放行开关：类名判定命中时不注入；放行后文字照打、「回车」同样按一次 Enter（首版曾禁用终端回车，按用户要求取消）。</li>
+<li><b>已验证（单测 37/37）</b> 回车词表补近音：实测 whisper 把「回车」听成「回出」两次，收 回车/换行/回出/回撤/回扯/回彻/会车，并支持 config 里的 <code>voice_input_enter_words</code> 自定义。</li>
+<li><b>已验证（单测 37/37）</b> 终端放行开关：类名判定命中时不注入；放行后文字照打、「回车」同样按一次 Enter（首版曾禁用终端回车，按用户要求取消）。</li>
 <li><b>已验证</b> 误拦根因：日志 risky target cls='CASCADIA_HOSTING_WINDOW_CLASS'；另一处误拦来自「标题含管理员」的普通窗口，已删除该规则。</li>
 <li><b>已验证（端到端）</b> 实按 BOOT：板子发 <code>VI</code> 帧，PC 端收到 <code>voice_toggle</code>，链路通。</li>
 <li><b>已验证（硬件）</b> BOOT 键=GPIO0：<code>GPIO?</code> 探测 16 Hz 采样，第 5.3 秒 GPIO0 变 0，其余 13 脚不变；PC 端解析 <code>VI</code> 帧的单测通过，<code>STAT</code> 新增 <code>key=N</code> 计数。</li>

@@ -2,7 +2,7 @@
   "schema": "archify-workflow-v3",
   "name": "mic-desktop-voice-typing",
   "title": "语音输入：把无线麦变成系统级麦克风（说话即上屏）",
-  "status": "implemented-2026-10-29d",
+  "status": "implemented-2026-10-29e",
   "source": "现有链路 tarot-esp32（采集→AEC→NS→VAD→BLE）、mic-desktop（解码→切句→转写）；新增 micapp/typer.py（SendInput Unicode）；Windows RegisterHotKey 做暂停热键；2026-10-29b 增加终端护栏、语音指令、Shift+F9；2026-10-29c 板载 BOOT 键；2026-10-29d 终端改配置判类名 + voice_input_allow_console 放行开关",
   "nodes": [
     {
@@ -33,7 +33,7 @@
     {
       "id": "voice-cmd",
       "type": "process",
-      "label": "语音指令：整句只有「回车」「换行」时按一次回车，其余照常逐字打字"
+      "label": "语音指令：整句「回车」「换行」→ 按一次 Enter；整句「清除」「清空」→ 退格删掉本次语音打进当前窗口的字"
     },
     {
       "id": "inject",
@@ -53,7 +53,7 @@
     {
       "id": "board-key",
       "type": "manual",
-      "label": "板载 BOOT 键（GPIO0，实测可用）：按下稳定 40 ms → BLE 发 VI 帧"
+      "label": "板载 BOOT 键（GPIO0）：短按 = 回车，长按 3 秒 = 切换语音输入开关"
     }
   ],
   "edges": [
@@ -101,6 +101,11 @@
       "from": "board-key",
       "to": "switch",
       "label": "VI 控制帧经 BLE 上送，PC 端等同于按一次 Shift+F9"
+    },
+    {
+      "from": "board-key",
+      "to": "inject",
+      "label": "短按发 EN 帧 → 直接按一次回车（不过闸门，等同按键盘）"
     }
   ],
   "failure_exits": [
@@ -150,7 +155,9 @@
     "voice_cmd": "语音指令只认整句（normalize 后等于「回车」/「换行」），不做删除类指令，避免句子里的词被误当命令",
     "不做": "标点自动补全、多语言混输、手机端、删除类语音指令",
     "console_rule": "终端判定只按窗口类名（conhost / CASCADIA_HOSTING_WINDOW_CLASS / mintty / PuTTY）；曾用「标题含管理员」兜底，把群聊/文档窗口误当成终端，已删",
-    "console_allow": "voice_input_allow_console=true 时终端与普通窗口完全一致：文字、回车都生效。代价是终端里一句误识别的「回车」会直接执行那行命令，由用户自行承担"
+    "console_allow": "voice_input_allow_console=true 时终端与普通窗口完全一致：文字、回车都生效。代价是终端里一句误识别的「回车」会直接执行那行命令，由用户自行承担",
+    "board_key": "BOOT 键双用：短按（<3s）= 回车，长按（≥3s，到点即触发）= 切换开关；EN 帧不经过闸门，等同用户亲手按回车。RESET 键是 EN 复位脚，不能当输入",
+    "clear": "清除只删「语音打进来的字」：记账字数 + 记窗口句柄，换过窗口就不删；单次上限 4000 字；指令词不参与去重（连说两次「回车」就是两次回车）"
   },
   "verification": [
     {
@@ -232,6 +239,16 @@
       "item": "误拦根因",
       "status": "已验证",
       "evidence": "用户实机：日志 risky target cls='CASCADIA_HOSTING_WINDOW_CLASS'，且此前误拦来自标题里含「管理员」的普通窗口"
+    },
+    {
+      "item": "板载 BOOT 键双用",
+      "status": "已验证（用户实机）",
+      "evidence": "短按=回车、长按 3 秒=切开关；长按到点即触发，松手不重复"
+    },
+    {
+      "item": "语音清除",
+      "status": "已验证（单测）",
+      "evidence": "打一句后说「清除」→ cleared 且窗口清空；再说一次 → nothing_to_clear；换窗口或没打过字都不删。全套 43/43"
     }
   ],
   "references": [

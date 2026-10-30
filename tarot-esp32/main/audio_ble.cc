@@ -36,7 +36,8 @@ volatile uint32_t s_sent = 0;
 // 发送失败才是链路/缓冲问题。混在一起看会误判成严重丢包。
 volatile uint32_t s_drop_nolink = 0;
 volatile uint32_t s_drop_fail = 0;
-volatile uint32_t s_key_presses = 0;   // BOOT 键按下次数，写进 STAT 供 PC 端核对
+volatile uint32_t s_key_presses = 0;   // 长按切换开关次数，写进 STAT 供 PC 端核对
+volatile uint32_t s_key_enters = 0;    // 短按当回车次数
 volatile uint32_t s_rx_frames = 0;   // 下行收到的 TTS 帧数
 
 
@@ -163,11 +164,12 @@ void reply_status() {
     char text[192];
     const int n = snprintf(text, sizeof(text),
                            "STAT ble=on mtu=%u conn=%d sub=%d sent=%u drop_nolink=%u "
-                           "drop_fail=%u rx=%u key=%u\n",
+                           "drop_fail=%u rx=%u key=%u/%u\n",
                            static_cast<unsigned>(s_mtu), s_conn == BLE_HS_CONN_HANDLE_NONE ? 0 : 1,
                            s_subscribed ? 1 : 0, static_cast<unsigned>(s_sent),
                            static_cast<unsigned>(s_drop_nolink), static_cast<unsigned>(s_drop_fail),
-                           static_cast<unsigned>(s_rx_frames), static_cast<unsigned>(s_key_presses));
+                           static_cast<unsigned>(s_rx_frames), static_cast<unsigned>(s_key_presses),
+                           static_cast<unsigned>(s_key_enters));
     if (n > 0) send_flat(reinterpret_cast<const uint8_t *>(text), static_cast<size_t>(n));
 }
 
@@ -181,6 +183,14 @@ void send_vi() {
     send_flat(kMsg, sizeof(kMsg));
 }
 
+void send_en() {
+    if (s_conn == BLE_HS_CONN_HANDLE_NONE || !s_subscribed) return;
+    static const uint8_t kMsg[3] = {'E', 'N', 10};   // 三个字节：E N 换行
+    send_flat(kMsg, sizeof(kMsg));
+}
+
+// BOOT 键两种用法：短按 = 回车，长按 3 秒 = 切换语音输入开关。
+// 3 秒一到就立刻触发（不等松手），免得用户按住等反馈；松手时不再重复。
 void boot_key_task(void *) {
     gpio_config_t io = {};
     io.pin_bit_mask = 1ULL << static_cast<int>(kBootKey);
@@ -192,6 +202,9 @@ void boot_key_task(void *) {
 
     int stable = 1;    // 上拉，未按下 = 1
     int cnt = 0;
+    bool pressed = false;
+    bool long_fired = false;
+    int64_t pressed_at = 0;
     while (true) {
         const int lv = gpio_get_level(kBootKey);
         if (lv != stable) {
@@ -199,13 +212,28 @@ void boot_key_task(void *) {
                 stable = lv;
                 cnt = 0;
                 if (lv == 0) {
-                    ++s_key_presses;
-                    ESP_LOGI(TAG, "boot key pressed (total %u)", static_cast<unsigned>(s_key_presses));
-                    send_vi();
+                    pressed = true;
+                    long_fired = false;
+                    pressed_at = esp_timer_get_time();
+                } else if (pressed) {
+                    pressed = false;
+                    if (!long_fired) {
+                        ++s_key_enters;
+                        ESP_LOGI(TAG, "boot key short press -> ENTER (%u)",
+                                 static_cast<unsigned>(s_key_enters));
+                        send_en();
+                    }
                 }
             }
         } else {
             cnt = 0;
+        }
+        if (pressed && !long_fired && esp_timer_get_time() - pressed_at >= 3000000) {
+            long_fired = true;
+            ++s_key_presses;
+            ESP_LOGI(TAG, "boot key long press -> TOGGLE (%u)",
+                     static_cast<unsigned>(s_key_presses));
+            send_vi();
         }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
