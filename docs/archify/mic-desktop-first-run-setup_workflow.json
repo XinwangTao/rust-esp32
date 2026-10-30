@@ -1,0 +1,167 @@
+{
+  "schema": "archify-workflow-v3",
+  "name": "mic-desktop-first-run-setup",
+  "title": "首启向导：无线麦接到一台新电脑的前置条件引导",
+  "status": "implemented-2026-10-30",
+  "source": "场景：把板子通过蓝牙接到另一台电脑（第二用户/新机器）。目标：MicDesktop 首次启动时把「蓝牙连板子 + 转写引擎可用」这两个基础功能前置条件引导配置完成，写进 config.json；之后每次启动直达主界面。",
+  "nodes": [
+    {
+      "id": "detect",
+      "type": "process",
+      "label": "启动自检：config 是否已配置（引擎+板子）？蓝牙适配器在不在？"
+    },
+    {
+      "id": "wizard",
+      "type": "manual",
+      "label": "首启向导（未配置才弹出，已配置直达主界面）"
+    },
+    {
+      "id": "bt-guide",
+      "type": "manual",
+      "label": "蓝牙指引：扫描 MicDesktop-* → 用户选定板子（BLE 单连接，提示原机器要先断开）"
+    },
+    {
+      "id": "engine",
+      "type": "manual",
+      "label": "转写引擎：本地/局域网服务（默认推荐，自动探测本机与局域网 :8390）或 讯飞云端（填凭据）"
+    },
+    {
+      "id": "probe",
+      "type": "process",
+      "label": "试说一句：BLE 连上 + 引擎真转写一条 → 向导里直接看到字上屏"
+    },
+    {
+      "id": "save",
+      "type": "process",
+      "label": "写 config.json/state.json → 进主界面（凭据不进 git）"
+    },
+    {
+      "id": "skip",
+      "type": "manual",
+      "label": "跳过向导：用默认值进主界面，顶栏挂「未完成配置」黄条，随时可从界面重开向导"
+    }
+  ],
+  "edges": [
+    {
+      "from": "detect",
+      "to": "wizard",
+      "label": "未配置 → 弹向导"
+    },
+    {
+      "from": "detect",
+      "to": "save",
+      "label": "已配置 → 直达主界面"
+    },
+    {
+      "from": "wizard",
+      "to": "bt-guide",
+      "label": "第 1 步：连板子"
+    },
+    {
+      "from": "wizard",
+      "to": "engine",
+      "label": "第 2 步：选引擎（两步可乱序、可跳过）"
+    },
+    {
+      "from": "bt-guide",
+      "to": "probe",
+      "label": "已选定设备"
+    },
+    {
+      "from": "engine",
+      "to": "probe",
+      "label": "引擎可达"
+    },
+    {
+      "from": "probe",
+      "to": "save",
+      "label": "试转写成功"
+    },
+    {
+      "from": "probe",
+      "to": "bt-guide",
+      "label": "失败 → 回对应步骤，已填内容不丢"
+    },
+    {
+      "from": "wizard",
+      "to": "skip",
+      "label": "直接关掉向导"
+    },
+    {
+      "from": "skip",
+      "to": "save",
+      "label": "默认配置落盘"
+    }
+  ],
+  "failure_exits": [
+    {
+      "from": "detect",
+      "condition": "蓝牙适配器缺失/被关",
+      "to": "向导首步给出指引（设备管理器/飞行模式），不阻塞：可以先配引擎，蓝牙好了再连"
+    },
+    {
+      "from": "bt-guide",
+      "condition": "扫不到 MicDesktop-*",
+      "to": "列出三个原因：板子没电 / 被别的电脑连着（BLE 单连接）/ 距离远；给「重新扫描」按钮"
+    },
+    {
+      "from": "engine",
+      "condition": "本地服务不可达 / 讯飞凭据错误",
+      "to": "显示具体错误与改法；允许先跳过，主界面里引擎会照常报状态"
+    },
+    {
+      "from": "probe",
+      "condition": "试转写失败或超时",
+      "to": "提示回引擎或蓝牙步骤；已填内容不丢"
+    }
+  ],
+  "constraints": {
+    "no_touch": "不改已有主流程；向导只写 config.json/state.json，主界面其余功能一行不动",
+    "ble_single": "BLE 单连接：第二台机器连上后原机器必须断开；向导要提示这一点",
+    "secret": "讯飞凭据/服务地址写 dist/config.json（gitignore 内），仓库里的 config.json 保持空模板",
+    "guide": "README.md 同步补「第二台电脑接入」一节：下载 EXE → 开蓝牙 → 跑向导"
+  },
+  "verification": [
+    {
+      "item": "全新目录启动 → 弹向导",
+      "status": "已验证",
+      "evidence": "dist/config.json 换成空模板启动 EXE：欢迎页正常渲染（截图），日志 setup: 未配置，弹首启向导"
+    },
+    {
+      "item": "老机器静默迁移",
+      "status": "已验证",
+      "evidence": "恢复真配置启动：无弹窗，setup_done=true 自动写入，黄条按钮消失，板子正常连上"
+    },
+    {
+      "item": "跳过/未完成 → 黄条不阻塞",
+      "status": "已验证",
+      "evidence": "主界面底栏出现「⚙ 完成初始配置」amber 按钮，点击可重开向导（board_connected_name 已连时不重复扫描）"
+    },
+    {
+      "item": "逻辑测试",
+      "status": "已验证",
+      "evidence": "test_setup.py 10/10（needs_setup 六分支/looks_configured 互补/local_ip/真服务与死端口探测）"
+    },
+    {
+      "item": "注入改剪贴板粘贴",
+      "status": "已验证",
+      "evidence": "豆包 IME 激活后逐字 SendInput 被改写（标点翻倍、字丢失，41/43 稳定复现）；type_text 改为剪贴板+Ctrl+V 为主后 43/43，剪贴板 0.4 s 后恢复"
+    }
+  ],
+  "references": [
+    "mic-desktop-voice-typing_workflow",
+    "esp32s3-ble-audio_workflow"
+  ],
+  "decisions_confirmed": [
+    {
+      "question": "第二台机器的默认推荐引擎",
+      "answer": "局域网服务优先：向导自动探测 127.0.0.1:8390 与局域网 /24 的 8390 端口，探到自动填；讯飞云端为备选",
+      "confirmed": "2026-10-30"
+    },
+    {
+      "question": "推 GitHub 的仓库范围与可见性",
+      "answer": "mic-desktop + rust-esp32 都推，public",
+      "confirmed": "2026-10-30"
+    }
+  ]
+}
