@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>跨机语音输入：一个麦克风，热键在两台电脑间切换打进哪台</title>
+<style>
+:root{color-scheme:light;--ink:#18212b;--muted:#607080;--line:#b8c5cf;--surface:#f5f7f8;--system:#d9ecf4;--process:#e4eee1;--manual:#f7e7c9;--fail:#f3d7d2}
+*{box-sizing:border-box}body{margin:0;background:#fff;color:var(--ink);font:15px/1.5 system-ui,"Microsoft YaHei",sans-serif}main{max-width:1240px;margin:0 auto;padding:28px 24px 44px}h1{font-size:28px;margin:0 0 6px}p{margin:4px 0;color:var(--muted)}.meta{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0 22px}.tag{border:1px solid var(--line);padding:4px 9px;border-radius:4px;background:var(--surface);font-size:13px}.legend{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0 18px;color:var(--muted);font-size:13px}.legend span:before{content:"";display:inline-block;width:12px;height:12px;margin-right:5px;vertical-align:-2px;border:1px solid var(--line)}.l-system:before{background:var(--system)}.l-process:before{background:var(--process)}.l-manual:before{background:var(--manual)}.l-fail:before{background:var(--fail)}.flow{border:1px solid var(--line);background:var(--surface);padding:22px;overflow:auto}.row{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:26px;min-width:920px;align-items:center}.node{min-height:92px;border:1px solid var(--line);border-radius:5px;padding:11px 10px;display:flex;align-items:center;justify-content:center;text-align:center;font-weight:650;position:relative}.system{background:var(--system)}.process{background:var(--process)}.manual{background:var(--manual)}.arrow{position:absolute;right:-27px;top:50%;width:26px;border-top:2px solid #71808c}.arrow:after{content:"";position:absolute;right:-1px;top:-5px;border-left:7px solid #71808c;border-top:5px solid transparent;border-bottom:5px solid transparent}.branch{margin-top:16px;display:grid;grid-template-columns:minmax(150px,1fr) minmax(150px,1fr) 2fr;gap:26px;min-width:920px;align-items:center}.branch .note{border:1px dashed #71808c;border-radius:5px;padding:10px 12px;color:var(--muted);font-size:13px;background:#fff}.loop{margin-top:14px;border:1px dashed #71808c;border-radius:5px;padding:10px 12px;color:var(--muted);font-size:13px;background:#fff}.failures{margin-top:22px;display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.failure{background:var(--fail);border:1px solid #c9958b;border-radius:5px;padding:12px;font-size:14px}.failure strong{display:block;margin-bottom:4px}.section{margin-top:24px;border-top:1px solid var(--line);padding-top:16px}ul{margin:8px 0;padding-left:20px}code{background:#eef1f3;padding:1px 4px;border-radius:3px}@media(max-width:700px){main{padding:22px 14px}h1{font-size:23px}.failures{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<h1>跨机语音输入：一个麦克风，热键在两台电脑间切换打进哪台</h1>
+<p>Archify workflow · 状态：<strong>已实现 · 2026-10-30</strong> · 端到端待两台实机验收 · 目的：一台中枢转写，全局热键在本机/第二台之间切换「这一句打进哪台」</p>
+<div class="meta"><span class="tag">L2 新子系统</span><span class="tag">只转文字，不转音频</span><span class="tag">不动板子固件</span></div>
+<div class="legend"><span class="l-system">系统/已有</span><span class="l-process">处理</span><span class="l-manual">人工步骤</span><span class="l-fail">失败/兜底出口</span></div>
+<section class="flow" aria-label="跨机语音输入主流程">
+<div class="row">
+<div class="node system">板子采集<br>AEC → NS → VAD<br>上送中枢（已有）<span class="arrow"></span></div>
+<div class="node process">中枢切句 + 转写<br>→ 文字 + 时长<br>（已有）<span class="arrow"></span></div>
+<div class="node process">按当前目标分流<br>本机 / 第二台<span class="arrow"></span></div>
+<div class="node process">转发第二台<br>HTTP POST {text,dur}<span class="arrow"></span></div>
+<div class="node process">第二台上屏<br>复用 voice_input</div>
+</div>
+<div class="branch">
+<div class="node process">本机上屏<br>复用 voice_input<br>（不进网络）</div>
+<div class="node manual">切换热键<br>一键换目标<br>（state.json 持久化）</div>
+<div class="note"><b>为什么这样设计</b>：板子蓝牙是单连接，两台同时做不到，用户要的是「快速切换打进哪台」。中枢把转写好的文字（含时长）按当前目标分流——本机直接走现有 voice_input 上屏，第二台经局域网 HTTP 发给轻量接收端，接收端复用同一套 voice_input 闸门与注入。<b>只转文字</b>：第二台不需要转写引擎、不需要蓝牙，装个小接收端就行。</div>
+</div>
+<div class="loop">分流在 <code>main.py</code> 的 <code>on_result</code> 里做，采集/切句/转写/板子固件一行不改。第二台接收端只起一个 HTTP 端点 + 复用 <code>voice_input.py</code>/<code>typer.py</code>，不连板子、不跑 STT。</div>
+<div class="failures">
+<div class="failure"><strong>第二台不可达 / 超时</strong>文字回本机上屏 + 状态行提示「第二台不可达，已回本机」，不丢字。</div>
+<div class="failure"><strong>第二台前台是终端/管理员</strong>沿用现有护栏：不上屏，状态提示（与 voice-typing 一致）。</div>
+<div class="failure"><strong>切换热键被占用</strong>状态行提示注册失败，语音输入照常，可改键位。</div>
+</div>
+</section>
+<section class="section"><strong>边界与约束</strong><ul><li><b>中枢改动最小</b>：只在 on_result 按目标分流；采集、切句、转写、板子固件不动。</li><li><b>第二台轻量</b>：一个 HTTP 端点 + 复用 voice_input/typer，不连板子、不跑 STT。</li><li><b>只转文字</b>：第二台无需转写引擎与蓝牙。</li><li><b>传输</b>：同局域网 HTTP POST JSON，端口独立（建议 8391，避开 whisper 8390）。</li><li><b>状态</b>：目标记 state.json，重启恢复；热键与 F9/Shift+F9 不冲突。</li></ul></section>
+<section class="section"><strong>已定（2026-10-30，实现落点）</strong><ul><li>转发失败兜底：第二台不可达 → <b>回本机 + 状态提示</b>，不丢字。</li><li>切换热键：<b>F8</b>（hk_id=3，与 F9/Shift+F9 不冲突）。</li><li>第二台<b>沿用本机同套护栏</b>（终端不注入、回车/清除指令、去重）。</li></ul></section>
+<section class="section"><strong>已定（2026-10-30）</strong><ul><li>需求从「两台同时」改为「快速切换打进哪台」。</li><li>这台电脑当中枢；转发转写文字（非音频）；同一局域网。</li><li>切换方式：全局热键一键切换。</li></ul></section>
+<section class="section"><strong>实测结果</strong><ul><li><b>已验证（单元）</b> test_cross_pc.py 12/12：目标切换 + target.json 落盘恢复 + 转发命中真服务器收到 {text,dur} + 死端口返回 False。</li><li><b>已验证（单元）</b> 接收端 HTTP 往返把 {text,dur} 交给 voice.offer，回 200 action=typed；GET 健康检查 ok。</li><li><b>待实机</b> 两台实机端到端（切第二台出字）、F8 注册与状态行反馈、第二台不可达回本机整条真注入路径。</li></ul></section>
+</main>
+</body>
+</html>

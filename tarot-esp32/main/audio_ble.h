@@ -30,6 +30,12 @@ void audio_ble_send(const int16_t *samples, size_t count, uint8_t flags);
 // 统计：已发帧数、因未连接/缓冲不足丢掉的帧数、协商到的 MTU。
 void audio_ble_stats(uint32_t *sent, uint32_t *dropped, uint16_t *mtu);
 
+// 通过 TX 通知发一段文本（换行由调用方自带）。未连接时静默丢弃。
+void audio_ble_send_text(const char *text);
+
+// 链路可用：正在广播或已连接（OTA 自检用）。
+bool audio_ble_link_up(void);
+
 #ifdef __cplusplus
 }
 #endif

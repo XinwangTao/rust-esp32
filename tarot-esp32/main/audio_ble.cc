@@ -4,10 +4,12 @@
 #include <cstring>
 
 #include "audio_ns.h"
+#include "audio_ota.h"
+#include "audio_speaker.h"
+#include "audio_transmitter.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "audio_speaker.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "host/ble_hs.h"
@@ -30,6 +32,7 @@ uint16_t s_tx_handle = 0;
 uint16_t s_rx_handle = 0;
 volatile bool s_subscribed = false;
 volatile uint16_t s_mtu = 23;
+volatile bool s_advertising = false;
 uint16_t s_seq = 0;
 volatile uint32_t s_sent = 0;
 // 两种丢弃分开计数：没订阅时的丢弃是正常的（板子在等 PC 连），
@@ -161,15 +164,22 @@ void send_flat(const uint8_t *buf, size_t len) {
 }
 
 void reply_status() {
-    char text[192];
+    char text[360];
+    uint32_t pushes = 0, gapmax = 0, urp = 0, rmin = 0;
+    speaker_stats_take(&pushes, &gapmax, &urp, &rmin);
     const int n = snprintf(text, sizeof(text),
                            "STAT ble=on mtu=%u conn=%d sub=%d sent=%u drop_nolink=%u "
-                           "drop_fail=%u rx=%u key=%u/%u\n",
+                           "drop_fail=%u rx=%u ur=%u key=%u/%u ver=%s "
+                           "spk push=%u gapmax=%u urp=%u rmin=%u\n",
                            static_cast<unsigned>(s_mtu), s_conn == BLE_HS_CONN_HANDLE_NONE ? 0 : 1,
                            s_subscribed ? 1 : 0, static_cast<unsigned>(s_sent),
                            static_cast<unsigned>(s_drop_nolink), static_cast<unsigned>(s_drop_fail),
-                           static_cast<unsigned>(s_rx_frames), static_cast<unsigned>(s_key_presses),
-                           static_cast<unsigned>(s_key_enters));
+                           static_cast<unsigned>(s_rx_frames), static_cast<unsigned>(speaker_underruns()),
+                           static_cast<unsigned>(s_key_presses),
+                           static_cast<unsigned>(s_key_enters), FW_TAG,
+                           static_cast<unsigned>(pushes), static_cast<unsigned>(gapmax),
+                           static_cast<unsigned>(urp),
+                           static_cast<unsigned>(rmin == 0xFFFFFFFFu ? 0 : rmin));
     if (n > 0) send_flat(reinterpret_cast<const uint8_t *>(text), static_cast<size_t>(n));
 }
 
@@ -263,6 +273,20 @@ int gatt_access(uint16_t, uint16_t, struct ble_gatt_access_ctxt *ctxt, void *) {
 
     if (len >= 4 && std::memcmp(buf, "STAT", 4) == 0) {
         reply_status();
+    } else if (len >= 5 && std::memcmp(buf, "TX:on", 5) == 0) {
+        audio_tx_set_paused(false);
+        send_flat(reinterpret_cast<const uint8_t *>("TX on\n"), 6);
+    } else if (len >= 6 && std::memcmp(buf, "TX:off", 6) == 0) {
+        // 吊坠喇叭播放期间暂停上行，把 BLE 带宽让给下行（30s 自动恢复兜底）
+        audio_tx_set_paused(true);
+        send_flat(reinterpret_cast<const uint8_t *>("TX off\n"), 7);
+    } else if (len >= 3 && std::memcmp(buf, "OTA", 3) == 0) {
+        // Wi-Fi 拉取式 OTA：地址编译期来自 OTA_URL（audio.env）
+        if (audio_ota_start(OTA_URL)) {
+            send_flat(reinterpret_cast<const uint8_t *>("OTA start\n"), 10);
+        } else {
+            send_flat(reinterpret_cast<const uint8_t *>("OTA busy\n"), 9);
+        }
     } else if (len >= 4 && std::memcmp(buf, "TONE", 4) == 0) {
         // 与 UDP 侧同名控制帧：重播自检音，用来确认扬声器链路而不接串口
         speaker_play_tone();
@@ -423,6 +447,7 @@ void start_advertising() {
     },
                           nullptr);
     if (rc != 0) ESP_LOGE(TAG, "adv_start failed rc=%d", rc);
+    else s_advertising = true;
 }
 
 void on_sync() {
@@ -489,4 +514,13 @@ extern "C" void audio_ble_stats(uint32_t *sent, uint32_t *dropped, uint16_t *mtu
     if (sent != nullptr) *sent = s_sent;
     if (dropped != nullptr) *dropped = s_drop_nolink + s_drop_fail;
     if (mtu != nullptr) *mtu = s_mtu;
+}
+
+extern "C" void audio_ble_send_text(const char *text) {
+    if (text == nullptr) return;
+    send_flat(reinterpret_cast<const uint8_t *>(text), std::strlen(text));
+}
+
+extern "C" bool audio_ble_link_up(void) {
+    return s_conn != BLE_HS_CONN_HANDLE_NONE || s_advertising;
 }

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>tarot-esp32 Wi-Fi 拉取式 OTA · workflow（待确认）</title>
+<style>
+ body{margin:0;padding:28px 16px;background:#f6f7fa;color:#1c2333;font:14px/1.6 "Segoe UI","Microsoft YaHei",sans-serif}
+ .wrap{max-width:820px;margin:0 auto}
+ h1{font-size:20px;margin:0 0 4px} .meta{color:#5b6472;font-size:12px;margin-bottom:18px}
+ .n{background:#fff;border:1.5px solid #d7dce5;border-radius:10px;padding:10px 14px;margin:0 auto;width:620px;max-width:100%}
+ .n b{color:#2f6fed} .a{width:2px;height:22px;background:#d7dce5;margin:2px auto;position:relative}
+ .a:after{content:"";position:absolute;bottom:-1px;left:-4px;border:5px solid transparent;border-top-color:#d7dce5}
+ .e{background:#fbeae6;border:1.5px solid #e5b8ac;border-radius:10px;padding:9px 13px;margin-top:14px;font-size:13px}
+ .e h4{margin:0 0 3px;color:#b3432b;font-size:13px}
+ .ok{background:#e6f4ec;border-color:#b3d9c4}.ok h4{color:#1f7a4d}
+ small{color:#5b6472}
+</style>
+</head>
+<body><div class="wrap">
+<h1>tarot-esp32 · Wi-Fi 拉取式 OTA（workflow）</h1>
+<div class="meta">状态：<b style="color:#1f7a4d">已实现并实机验收（2026-11-02：OTA 0→100% + 坏镜像自动回滚）</b> ｜ 简报 docs/product/esp32s3-ota_brief.md ｜ 旁路 esp32s3-ota_workflow.json</div>
+
+<div class="n"><b>① PC</b>：<code>idf.py build</code> 产出 tarot-esp32.bin，<code>python -m http.server 8000</code> 提供下载</div>
+<div class="a"></div>
+<div class="n"><b>② BLE 触发</b>：App/PC 写控制帧 <code>OTA</code> → 板端回 <code>OTA start</code></div>
+<div class="a"></div>
+<div class="n"><b>③ Wi-Fi STA</b>：BLE 模式按需启动 Wi-Fi（复用 audio.env 的 SSID/PASSWORD）；连不上 → E1</div>
+<div class="a"></div>
+<div class="n"><b>④ HTTP 下载</b>：<code>esp_http_client</code> 拉 <code>OTA_URL</code>，<code>esp_ota_write</code> 流式写入空闲 OTA 分区</div>
+<div class="a"></div>
+<div class="n"><b>⑤ 校验 + 切换</b>：<code>esp_ota_end</code> 校验 → <code>esp_ota_set_boot_partition</code> → 回 <code>OTA ok</code> → 重启</div>
+<div class="a"></div>
+<div class="n"><b>⑥ 新固件自检</b>：BLE 广播成功 + 麦克风首帧 + PSRAM → <code>esp_ota_mark_app_valid_cancel_rollback()</code></div>
+
+<div class="e"><h4>E1 · 下载/校验失败（来自 ③④⑤）</h4>不切换分区，回 <code>OTA fail:&lt;wifi|http|image&gt;</code>，旧固件继续运行</div>
+<div class="e"><h4>E2 · 新固件自检失败/崩溃（来自 ⑥）</h4>未标记 valid → bootloader 下次启动自动回滚到旧分区</div>
+<div class="e ok"><h4>一次性前置（不在 OTA 流程内）</h4>分区表改双 OTA + 开 rollback 后，需 <b>USB 烧写一次</b>；之后才能 OTA</div>
+<small>节点数 6（≤8）；BLE 服务 UUID/音频帧协议不变，App 无需改动。</small>
+</div></body></html>

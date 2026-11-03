@@ -12,6 +12,7 @@
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -46,6 +47,11 @@ std::array<int32_t, SAMPLES_PER_FRAME> i2s_samples;
 
 QueueHandle_t frame_queue;
 i2s_chan_handle_t rx_handle;
+
+// OTA 期间暂停上行，避免 Wi-Fi 下载与 BLE 音频抢射频；s_tx_sent 供开机自检判断麦克风链路
+volatile bool s_tx_paused = false;
+volatile int64_t s_pause_until_us = 0;   // 兜底：App 意外退出时 30s 自动恢复上行
+volatile uint32_t s_tx_sent = 0;
 
 void capture_task(void *) {
     AudioFrame frame{};
@@ -91,6 +97,14 @@ void capture_task(void *) {
 void send_task(void *) {
     AudioFrame frame{};
     while (xQueueReceive(frame_queue, &frame, portMAX_DELAY) == pdTRUE) {
+        if (s_tx_paused) {
+            if (s_pause_until_us != 0 && esp_timer_get_time() > s_pause_until_us) {
+                s_tx_paused = false;      // 兜底自动恢复，防止 App 中途退出导致永久静音
+                s_pause_until_us = 0;
+            } else {
+                continue;   // 暂停中：丢弃本帧
+            }
+        }
 #ifdef AUDIO_LINK_BLE
         // BLE 模式：ADPCM 压缩后走 GATT 通知。未连接时 audio_ble_send 内部直接丢弃并计数。
         audio_ble_send(frame.samples.data(), SAMPLES_PER_FRAME, frame.flags);
@@ -99,6 +113,7 @@ void send_task(void *) {
                             sizeof(frame.samples), frame.sequence, SAMPLE_RATE,
                             SAMPLES_PER_FRAME, frame.flags);
 #endif
+        ++s_tx_sent;
     }
 }
 
@@ -112,6 +127,13 @@ void configure_keys() {
     ESP_ERROR_CHECK(gpio_config(&config));
 }
 }  // namespace
+
+extern "C" void audio_tx_set_paused(bool paused) {
+    s_tx_paused = paused;
+    s_pause_until_us = paused ? (esp_timer_get_time() + 30LL * 1000 * 1000) : 0;
+}
+
+extern "C" uint32_t audio_tx_sent_count(void) { return s_tx_sent; }
 
 extern "C" esp_err_t audio_transmitter_start(void) {
     configure_keys();

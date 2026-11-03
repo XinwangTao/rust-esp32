@@ -18,7 +18,9 @@
 #include "esp_log.h"
 #include "esp_psram.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -50,11 +52,29 @@ extern "C" uint16_t rust_udp_target_port(void);
 namespace {
 constexpr char TAG[] = "audio_spk";
 constexpr size_t TX_BUF_SAMPLES = 1024;
+// 下行抖动缓冲：0.5s @16k。BLE 20ms 一帧，网络抖动可达几十上百毫秒；
+// 没有缓冲时 GATT 回调直接阻塞写 I2S，DMA 一空就咔哒/断流。
+constexpr size_t RING_SAMPLES = 16000;
+constexpr size_t FEED_CHUNK = 320;   // 20 ms
 
 i2s_chan_handle_t tx_handle = nullptr;
 int cur_bclk = SPEAKER_BCLK;
 int cur_ws = SPEAKER_WS;
 int cur_dout = SPEAKER_DOUT;
+int16_t *s_ring = nullptr;
+size_t s_w = 0, s_r = 0, s_used = 0;
+SemaphoreHandle_t s_ring_mux = nullptr;
+TaskHandle_t s_feed_task = nullptr;
+volatile uint32_t s_underruns = 0;
+// 播放期统计（STAT 读取后清零）：pushes=收到帧数，gapmax=帧间最大间隔 ms，
+// urp=播放期欠载次数，rmin=播放期环形缓冲最低水位（采样）
+volatile uint32_t s_stat_pushes = 0;
+volatile uint32_t s_stat_gapmax_ms = 0;
+volatile uint32_t s_stat_urp = 0;
+volatile uint32_t s_stat_rmin = 0xFFFFFFFFu;
+volatile int64_t s_last_push_us = 0;
+
+void speaker_feed_task(void *);   // 定义在文件后部，tx_init 里启动
 
 void amp_enable(bool on) {
 #if SPEAKER_EN >= 0
@@ -77,6 +97,8 @@ bool tx_init(int bclk, int ws, int dout) {
     }
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
     chan_cfg.auto_clear_after_cb = true;
+    chan_cfg.dma_desc_num = 8;     // 原来 6×240 帧 ≈ 90ms，加厚到 ≈120ms 兜底
+    chan_cfg.dma_frame_num = 240;
     if (i2s_new_channel(&chan_cfg, &tx_handle, nullptr) != ESP_OK) {
         tx_handle = nullptr;
         return false;
@@ -99,21 +121,88 @@ bool tx_init(int bclk, int ws, int dout) {
         tx_handle = nullptr;
         return false;
     }
+
+    // 抖动缓冲与播放任务只建一次；换引脚重配时继续复用
+    if (s_ring == nullptr) {
+        s_ring = static_cast<int16_t *>(
+            heap_caps_malloc(RING_SAMPLES * sizeof(int16_t),
+                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (s_ring == nullptr) {
+            s_ring = static_cast<int16_t *>(malloc(RING_SAMPLES * sizeof(int16_t)));
+        }
+        s_ring_mux = xSemaphoreCreateMutex();
+        if (s_ring != nullptr && s_ring_mux != nullptr) {
+            xTaskCreate(speaker_feed_task, "spk_feed", 4096, nullptr, 4, &s_feed_task);
+            ESP_LOGI(TAG, "downlink jitter buffer active (%u samples)",
+                     static_cast<unsigned>(RING_SAMPLES));
+        } else {
+            ESP_LOGW(TAG, "jitter buffer alloc failed, direct write fallback");
+        }
+    }
     cur_bclk = bclk;
     cur_ws = ws;
     cur_dout = dout;
     return true;
 }
 
-// 阻塞写 PCM（s16LE mono），I2S 时钟自动节流
+// 写 PCM（s16LE mono）：喂 AEC 参考后放进环形缓冲，由 speaker_feed_task 按 20ms 节奏
+// 稳定写 I2S。绝不能在这里阻塞——它会被 BLE GATT 回调调用，阻塞会拖垮蓝牙栈。
 void tx_write(const int16_t *samples, size_t count) {
-    // 先喂给音频前端的参考通道，再送 I2S（ref 略早于实际出声，AEC 内部会自适应对齐）。
-    // 两条链各自维护自己的参考环形缓冲，没起来的那个是空操作。
     audio_aec_feed_ref(samples, count);
-    if (tx_handle == nullptr) return;
-    size_t written = 0;
-    i2s_channel_write(tx_handle, samples, count * sizeof(int16_t), &written,
-                      pdMS_TO_TICKS(1000));
+    if (tx_handle == nullptr || s_ring == nullptr || s_ring_mux == nullptr) return;
+    const int64_t now_us = esp_timer_get_time();
+    if (s_last_push_us != 0) {
+        const uint32_t gap_ms = static_cast<uint32_t>((now_us - s_last_push_us) / 1000);
+        if (gap_ms > s_stat_gapmax_ms) s_stat_gapmax_ms = gap_ms;
+    }
+    s_last_push_us = now_us;
+    ++s_stat_pushes;
+    xSemaphoreTake(s_ring_mux, portMAX_DELAY);
+    for (size_t i = 0; i < count; ++i) {
+        if (s_used == RING_SAMPLES) {          // 满了丢最旧
+            s_r = (s_r + 1) % RING_SAMPLES;
+            --s_used;
+        }
+        s_ring[s_w] = samples[i];
+        s_w = (s_w + 1) % RING_SAMPLES;
+        ++s_used;
+    }
+    xSemaphoreGive(s_ring_mux);
+}
+
+// 专用播放任务：固定 20ms 节奏取 320 采样写 I2S；不足补零。
+// BLE 到达抖动只会让缓冲变浅/变深，不会造成 I2S 欠载咔哒。
+void speaker_feed_task(void *) {
+    static int16_t chunk[FEED_CHUNK];
+    TickType_t last = xTaskGetTickCount();
+    for (;;) {
+        vTaskDelayUntil(&last, pdMS_TO_TICKS(20));
+        if (tx_handle == nullptr || s_ring == nullptr || s_ring_mux == nullptr) continue;
+        size_t n = 0;
+        xSemaphoreTake(s_ring_mux, portMAX_DELAY);
+        // 只有凑满 20ms 才写：不足时保持不动，让 I2S DMA（~120ms）顶上。
+        // 以前不足就补零，会在播放中周期性插入 20ms 静音，听起来就是咔哒。
+        if (s_used >= FEED_CHUNK) {
+            while (n < FEED_CHUNK) {
+                chunk[n++] = s_ring[s_r];
+                s_r = (s_r + 1) % RING_SAMPLES;
+                --s_used;
+            }
+        }
+        const size_t fill = s_used;
+        xSemaphoreGive(s_ring_mux);
+        const bool streaming = s_last_push_us != 0 && (esp_timer_get_time() - s_last_push_us) < 300000;
+        if (streaming) {
+            if (fill < s_stat_rmin) s_stat_rmin = static_cast<uint32_t>(fill);
+            if (n == 0 && fill == 0) ++s_stat_urp;
+        }
+        if (n == 0) {
+            if (fill == 0) ++s_underruns;
+            continue;
+        }
+        size_t written = 0;
+        i2s_channel_write(tx_handle, chunk, sizeof(chunk), &written, pdMS_TO_TICKS(100));
+    }
 }
 
 // 自检音：两段短促双音，既用于开机，也可由下行 "TONE" 控制帧触发，
@@ -273,3 +362,17 @@ extern "C" void speaker_write(const int16_t *samples, size_t count) {
 }
 
 extern "C" void speaker_play_tone(void) { play_selftest_tone(); }
+
+extern "C" uint32_t speaker_underruns(void) { return s_underruns; }
+
+extern "C" void speaker_stats_take(uint32_t *pushes, uint32_t *gapmax_ms, uint32_t *urp, uint32_t *rmin) {
+    if (pushes) *pushes = s_stat_pushes;
+    if (gapmax_ms) *gapmax_ms = s_stat_gapmax_ms;
+    if (urp) *urp = s_stat_urp;
+    if (rmin) *rmin = s_stat_rmin;
+    s_stat_pushes = 0;
+    s_stat_gapmax_ms = 0;
+    s_stat_urp = 0;
+    s_stat_rmin = 0xFFFFFFFFu;
+    s_last_push_us = 0;   // 下一个窗口重新计最大间隔
+}

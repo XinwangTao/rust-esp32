@@ -28,7 +28,7 @@
     {
       "id": "gate",
       "type": "process",
-      "label": "输入闸门：太短、纯噪声、重复、回读期间、前台是终端（默认拦，可配置放行）→ 丢弃不上屏"
+      "label": "输入闸门：太短、纯噪声、重复、回读期间、正在手动打字（300ms 内）、前台是终端（默认拦，可配置放行）→ 丢弃不上屏"
     },
     {
       "id": "voice-cmd",
@@ -38,12 +38,12 @@
     {
       "id": "inject",
       "type": "process",
-      "label": "打字注入：SendInput Unicode 逐字送进当前前台窗口，不抢焦点"
+      "label": "打字注入：剪贴板 + Ctrl+V 整句粘进当前前台窗口（Ctrl/V 四个按键事件一次 SendInput 下发，全进或全不进），不抢焦点；剪贴板不可用时退回逐字 SendInput Unicode"
     },
     {
       "id": "switch",
       "type": "manual",
-      "label": "人工开关：界面总开关 + F9 暂停/恢复 + Shift+F9 硬开关 + 板载 BOOT 键（BLE 控制帧 VI）"
+      "label": "人工开关：界面总开关 + F9 暂停/恢复 + Ctrl+Alt+F9 硬开关 + Ctrl+Alt+F8 终端注入开关 + 板载 BOOT 键（BLE 控制帧 VI）"
     },
     {
       "id": "loop-guard",
@@ -155,9 +155,12 @@
     "voice_cmd": "语音指令只认整句（normalize 后等于「回车」/「换行」），不做删除类指令，避免句子里的词被误当命令",
     "不做": "标点自动补全、多语言混输、手机端、删除类语音指令",
     "console_rule": "终端判定只按窗口类名（conhost / CASCADIA_HOSTING_WINDOW_CLASS / mintty / PuTTY）；曾用「标题含管理员」兜底，把群聊/文档窗口误当成终端，已删",
-    "console_allow": "voice_input_allow_console=true 时终端与普通窗口完全一致：文字、回车都生效。代价是终端里一句误识别的「回车」会直接执行那行命令，由用户自行承担",
+    "typing_guard": "注入前用 GetLastInputInfo 判断用户最近 300ms 是否在手动打字（用 _last_inject_tick 排除自身 SendInput），是则跳过这句、不 Ctrl+V，避免顶掉输入法正在组词的内容——解决「语音一开就打不了中文」",
+    "console_allow": "voice_input_allow_console 是终端注入默认值，运行期 Ctrl+Alt+F8 可切换、状态落 state.json；true 时终端与普通窗口完全一致（文字、回车都生效）。代价是终端里一句误识别的「回车」会直接执行那行命令，由用户自行承担",
     "board_key": "BOOT 键双用：短按（<3s）= 回车，长按（≥3s，到点即触发）= 切换开关；EN 帧不经过闸门，等同用户亲手按回车。RESET 键是 EN 复位脚，不能当输入",
-    "clear": "清除只删「语音打进来的字」：记账字数 + 记窗口句柄，换过窗口就不删；单次上限 4000 字；指令词不参与去重（连说两次「回车」就是两次回车）"
+    "clear": "清除只删「语音打进来的字」：记账字数 + 记窗口句柄，换过窗口就不删；单次上限 4000 字；指令词不参与去重（连说两次「回车」就是两次回车）",
+    "hotkey_mods": "带修饰键的全局热键只用 Ctrl+Alt，不用 Shift。RegisterHotKey 会把功能键从输入队列里吞掉，输入法只看到一次裸 Shift——中文输入法普遍把它当中英文切换（豆包 languageSwitchKey=shift），窗口被切到英文档后打拼音只出英文字母，且状态按窗口/线程记，软件关掉也不会自动恢复。2026-10-31 实测：注册 Shift+F9 后发一遍该组合，IME conversion 0x0001→0x0000；改用 Ctrl+Alt+F9 后回调照常触发、状态保持中文",
+    "inject_atomic": "Ctrl+V 的四个按键事件一次 SendInput 下发（SendInput 全进或全不进），避免 Ctrl 卡在按下状态；退出时再把 Ctrl/Shift/Alt/Win 各抬一次"
   },
   "verification": [
     {
@@ -249,6 +252,16 @@
       "item": "语音清除",
       "status": "已验证（单测）",
       "evidence": "打一句后说「清除」→ cleared 且窗口清空；再说一次 → nothing_to_clear；换窗口或没打过字都不删。全套 43/43"
+    },
+    {
+      "item": "热键不再切走输入法",
+      "status": "已验证（实机自动化）",
+      "evidence": "自建窗口 + 真注册 GlobalHotkey：Ctrl+Alt+F9 / Ctrl+Alt+F8 回调各命中一次且 IME 保持中文 0x0001；对照组注册 Shift+F9 同样发一遍 → IME 变英文 0x0000。对照组不注册热键时发 Shift+F9 则保持中文"
+    },
+    {
+      "item": "一键修复输入法",
+      "status": "已验证（实机自动化）",
+      "evidence": "tools/fix_cn_input.py：自建窗口强制置英文后再调用 main()，窗口状态被置回中文 0x0001 并提示「已切回中文」；TSF 程序（Windows Terminal）拿不到 IMM 上下文时改发一次裸 Shift 做切换"
     }
   ],
   "references": [

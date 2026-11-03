@@ -1,0 +1,155 @@
+{
+  "schema": "archify-workflow-v3",
+  "name": "mic-desktop-cross-pc-typing",
+  "title": "跨机语音输入：一个麦克风，热键在两台电脑间切换打进哪台",
+  "status": "implemented-2026-10-30",
+  "source": "需求：一个用户、一个无线麦板子、两台同一局域网 Windows 台式机。这台电脑（板子当前连的）当转写+转发中枢，第二台装轻量接收端。中枢转写好文字后按当前目标分流：本机→本机上屏，第二台→经局域网 HTTP POST 文字给第二台，第二台上屏。全局热键一键切换目标。明确不做两台同时、不做音频转发（只转文字）、不动板子固件。",
+  "nodes": [
+    {
+      "id": "capture",
+      "type": "system",
+      "label": "板子采集 → AEC → NS → VAD → 上送中枢（BLE/UDP，已有，一行不改）"
+    },
+    {
+      "id": "stt",
+      "type": "process",
+      "label": "中枢切句 + 转写 → 文字 + 时长（已有 VADSlicer + STT）"
+    },
+    {
+      "id": "route",
+      "type": "process",
+      "label": "按当前目标分流：本机 / 第二台"
+    },
+    {
+      "id": "local",
+      "type": "process",
+      "label": "本机上屏：复用现有 voice_input 闸门 + 注入（已有）"
+    },
+    {
+      "id": "forward",
+      "type": "process",
+      "label": "转发第二台：HTTP POST {text,dur} → 第二台接收端"
+    },
+    {
+      "id": "remote",
+      "type": "process",
+      "label": "第二台上屏：接收端复用 voice_input 闸门 + 注入"
+    },
+    {
+      "id": "switch",
+      "type": "manual",
+      "label": "全局热键一键切换目标（本机 ↔ 第二台），状态行反馈"
+    }
+  ],
+  "edges": [
+    {
+      "from": "capture",
+      "to": "stt",
+      "label": "PCM + VAD 标志"
+    },
+    {
+      "from": "stt",
+      "to": "route",
+      "label": "文字 + 时长"
+    },
+    {
+      "from": "route",
+      "to": "local",
+      "label": "目标 = 本机"
+    },
+    {
+      "from": "route",
+      "to": "forward",
+      "label": "目标 = 第二台"
+    },
+    {
+      "from": "forward",
+      "to": "remote",
+      "label": "局域网 JSON"
+    },
+    {
+      "from": "switch",
+      "to": "route",
+      "label": "改写目标状态（state.json）"
+    }
+  ],
+  "failure_exits": [
+    {
+      "from": "forward",
+      "condition": "第二台接收端不在线 / 端口不通 / 超时",
+      "to": "文字回本机 local 上屏 + 状态行提示「第二台不可达，已回本机」，不丢字"
+    },
+    {
+      "from": "remote",
+      "condition": "第二台前台是终端/管理员窗口",
+      "to": "沿用现有护栏：不上屏，状态提示（与 voice-typing 一致）"
+    },
+    {
+      "from": "switch",
+      "condition": "切换热键被别的程序占用",
+      "to": "状态行提示热键注册失败，语音输入照常，可改键位"
+    }
+  ],
+  "constraints": {
+    "hub_min_change": "中枢只在 main.py 的 on_result 里按目标分流（本机 voice.offer / 转发），采集、切句、转写、板子固件一行不改",
+    "remote_light": "第二台是轻量接收端：只起一个 HTTP 端点 + 复用 voice_input/typer，不连板子、不跑 STT",
+    "text_only": "只转发转写文字（含时长），不转发音频——第二台无需转写引擎与蓝牙",
+    "transport": "同一局域网 HTTP POST JSON，端口独立（建议 8391，避开 whisper 的 8390）",
+    "switch_key": "新增一个全局热键，与 F9/Shift+F9 不冲突（具体键待定）",
+    "state": "目标状态记 state.json，重启恢复上次目标",
+    "out_of_scope": "两台同时、第二台独立转写、跨网段/公网、手机端、板子固件改动"
+  },
+  "verification": [
+    {
+      "item": "目标切换 + 落盘恢复 + 转发成功/失败（单元）",
+      "status": "已验证",
+      "evidence": "test_cross_pc.py 12/12：toggle、target.json 恢复、forward 命中真服务器收到 {text,dur}、死端口返回 False"
+    },
+    {
+      "item": "接收端 HTTP 往返把 {text,dur} 交给 voice.offer（单元）",
+      "status": "已验证",
+      "evidence": "test_cross_pc.py：make_handler 回 200 action=typed，fake voice 收到原文与时长"
+    },
+    {
+      "item": "目标=本机时本机出字（回归）",
+      "status": "待实机",
+      "evidence": "路由只在 on_result 增加第二台分支，本机路径逻辑未变；待真实启动回归"
+    },
+    {
+      "item": "切到第二台后文字出现在第二台前台（端到端）",
+      "status": "待实机",
+      "evidence": "HTTP 往返单测已过；两台实机端到端待验"
+    },
+    {
+      "item": "第二台不可达时回本机且不丢字",
+      "status": "部分验证",
+      "evidence": "forward 失败返回 False 已单测；main.py 据此回本机 voice.offer 兜底，回本机真注入路径未单测（需 Qt）"
+    },
+    {
+      "item": "F8 热键注册与状态可见",
+      "status": "待实机",
+      "evidence": "RemoteTarget.toggle 单测通过；F8 注册（hk_id=3）与状态行反馈需真实启动验证"
+    }
+  ],
+  "references": [
+    "mic-desktop-voice-typing_workflow",
+    "mic-desktop-first-run-setup_workflow"
+  ],
+  "decisions_confirmed": [
+    {
+      "question": "两台同时 vs 快速切换",
+      "answer": "快速切换打进哪台（明确不做两台同时）",
+      "confirmed": "2026-10-30"
+    },
+    {
+      "question": "哪台当中枢、转发什么、网络",
+      "answer": "这台当中枢；转发转写文字（非音频）；同一局域网",
+      "confirmed": "2026-10-30"
+    },
+    {
+      "question": "切换方式",
+      "answer": "全局热键一键切换",
+      "confirmed": "2026-10-30"
+    }
+  ]
+}

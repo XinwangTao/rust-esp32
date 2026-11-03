@@ -1,0 +1,107 @@
+{
+  "name": "esp32s3-ota",
+  "title": "tarot-esp32 Wi-Fi 拉取式 OTA",
+  "version": 1,
+  "status": "implemented-2026-11-02",
+  "date": "2026-11-02",
+  "brief": "docs/product/esp32s3-ota_brief.md",
+  "levels": {
+    "classification": "L2",
+    "reason": "新子系统：固件 OTA 升级与回滚（新分区布局、新控制命令、回滚路径）"
+  },
+  "nodes": [
+    {
+      "id": "N1",
+      "title": "PC 构建并提供 bin",
+      "desc": "idf.py build → tarot-esp32.bin；python -m http.server 8000"
+    },
+    {
+      "id": "N2",
+      "title": "BLE 触发 OTA",
+      "desc": "控制帧 OTA → 回 OTA start"
+    },
+    {
+      "id": "N3",
+      "title": "Wi-Fi STA 启动",
+      "desc": "BLE 模式按需初始化 Wi-Fi，复用 audio.env 凭据"
+    },
+    {
+      "id": "N4",
+      "title": "HTTP 下载写入",
+      "desc": "esp_http_client + esp_ota_write 流式写入空闲 OTA 分区"
+    },
+    {
+      "id": "N5",
+      "title": "校验与切换",
+      "desc": "esp_ota_end 校验 → set_boot_partition → 回 OTA ok → 重启"
+    },
+    {
+      "id": "N6",
+      "title": "新固件自检",
+      "desc": "BLE 广播 + 麦克风首帧 + PSRAM → mark_app_valid_cancel_rollback"
+    }
+  ],
+  "edges": [
+    {
+      "from": "N1",
+      "to": "N2",
+      "kind": "flow"
+    },
+    {
+      "from": "N2",
+      "to": "N3",
+      "kind": "flow"
+    },
+    {
+      "from": "N3",
+      "to": "N4",
+      "kind": "flow"
+    },
+    {
+      "from": "N4",
+      "to": "N5",
+      "kind": "flow"
+    },
+    {
+      "from": "N5",
+      "to": "N6",
+      "kind": "flow"
+    }
+  ],
+  "exits": [
+    {
+      "id": "E1",
+      "from": [
+        "N3",
+        "N4",
+        "N5"
+      ],
+      "title": "下载/校验失败",
+      "desc": "不切换分区，回 OTA fail:<wifi|http|image>，旧固件继续运行"
+    },
+    {
+      "id": "E2",
+      "from": [
+        "N6"
+      ],
+      "title": "自检失败/崩溃",
+      "desc": "未标记 valid，bootloader 下次启动回滚旧分区"
+    }
+  ],
+  "preconditions": [
+    "分区表改 ota_0/ota_1 各 4MB（spiffs ~7.5MB）并开 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE",
+    "首次需 USB 烧写一次（bootloader/分区表不能自更新）"
+  ],
+  "open_questions": [
+    "触发：BLE OTA + 编译期 OTA_URL（推荐）还是 OTA <url>（需扩控制帧缓冲到 256B）",
+    "OTA 期间是否暂停上行音频（推荐暂停）",
+    "自检项：BLE+麦克风+PSRAM（推荐）还是仅启动成功"
+  ],
+  "verified": [
+    "OTA v2：BLE 发 OTA → Wi-Fi STA → HTTP 拉取 → 0-100% 进度 → OTA ok rebooting；重启后 STAT ver=ota-v2",
+    "回滚：FW_CRASH 坏镜像 OTA 后启动 3s 崩溃 → bootloader 自动回退，STAT ver=ota-v2（旧固件）",
+    "分区：ota_0/ota_1 各 4MB + spiffs 7.875MB（资源 6.5M）；rollback 已启用",
+    "OTA 期间暂停上行；自检 = PSRAM + 麦克风首帧 + BLE 链路",
+    "v5 吊坠音质修复（待板子上电验证）：播放任务“凑满 20ms 才写、不再补零”，App 20ms 供帧循环移到 IO 线程（此前主线程卡 2.6s 造成断流），预灌 240ms；STAT 新增 spk push/gapmax/urp/rmin"
+  ]
+}
